@@ -528,7 +528,7 @@ def calcular_espectro_outer_race(fault_diameter_mm, rpm, max_harmonics=10, K=1.0
             all_results.append({
                 'Harmonic_Order': j,
                 'Frequency_Hz': f_harmonic_Hz,
-                'Amplitude_m_s2': accel_ms2,
+                'Amplitude_Accel_m_s2': accel_ms2,
                 'K': k_val
             })
             
