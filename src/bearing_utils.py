@@ -43,7 +43,7 @@ def calculate_tandon_coefficients(fault_diameter_mm, rpm, fault_type, K=1.0):
     alpha = np.radians(alpha_deg)
     
     # Load parameters
-    radial_load_kg = 100
+    radial_load_kg = 50
     radial_load_N = radial_load_kg * 9.80665 # Convert kg to Newtons
     
     # Pulse Height (K) - Now configurable via parameter (default 1.0) 
@@ -307,7 +307,7 @@ def calcular_espectro_inner_completo(
     max_harmonics=5,     # Quantos picos principais (j)
     num_sidebands=3,     # Quantos sidebands (r) ao redor de cada j
     max_s_iter=50,       # Limite da somatória interna do pulso
-    K=1.0                # Pulse height coefficient
+    K=1.0                # Pulse height coefficient (float or list)
 ):
     """
     Calcula o espectro COMPLETO (Picos Principais + Sidebands) para falha de Pista Interna.
@@ -315,28 +315,15 @@ def calcular_espectro_inner_completo(
     
     Retorna:
         pd.DataFrame contendo todas as frequências (Principais e Sidebands) calculadas,
-        ordenadas por frequência.
+        ordenadas por frequência. Inclui coluna 'K'.
     """
     
-    # ---------------------------------------------------------
-    # 1. Obter Coeficientes de Tandon e Frequências
-    # ---------------------------------------------------------
-    tandon_data = calculate_tandon_coefficients(fault_diameter_mm, rpm, fault_type='inner', K=K)
-    
-    Po = tandon_data['Po']
-    Fo = tandon_data['Fo']
-    
-    # Funções callable
-    Pr_func = tandon_data['Pr']
-    Fs_func = tandon_data['Fs']
-    
-    # Frequências
-    freqs = tandon_data['frequencies']
-    bpfi_hz = freqs['defect_freq_hz']
-    f_shaft_hz = freqs['shaft_freq_hz']
+    # Normalizar K para lista (suporte a iteração)
+    k_values = [K] if np.isscalar(K) else K
     
     # ---------------------------------------------------------
-    # 2. Obter Modos Naturais e Criar Lookup de Receptância
+    # 1. Obter Modos Naturais e Criar Lookup de Receptância
+    # (Calculado uma vez fora do loop de K)
     # ---------------------------------------------------------
     df_nat_freq = get_bearing_natural_frequencies() 
     df_inner = df_nat_freq[df_nat_freq['Race'] == 'Inner'].reset_index(drop=True)
@@ -355,104 +342,121 @@ def calcular_espectro_inner_completo(
         return dict_modes.get(k_abs, 0.0)
 
     Z = 9  # Número de esferas
-    results = []
-    
-    # ---------------------------------------------------------
-    # 3. Loop: Unificado (Para cada Harmônico Principal j)
-    # ---------------------------------------------------------
-    
-    for j in range(1, max_harmonics + 1):
+    all_results = []
+
+    # Loop para iterar sobre K
+    for k_val in k_values:
+        # ---------------------------------------------------------
+        # 2. Obter Coeficientes de Tandon e Frequências (Dependem de K)
+        # ---------------------------------------------------------
+        tandon_data = calculate_tandon_coefficients(fault_diameter_mm, rpm, fault_type='inner', K=k_val)
         
-        # --- PARTE A: CALCULAR PICO PRINCIPAL (Sideband_r = 0) ---
-        # Lógica da Eq. 28 Avancada
+        Po = tandon_data['Po']
+        Fo = tandon_data['Fo']
         
-        f_main_hz = j * bpfi_hz
-        w_main_rad = 2 * np.pi * f_main_hz
-        idx_base_main = Z * j
+        # Funções callable
+        Pr_func = tandon_data['Pr']
+        Fs_func = tandon_data['Fs']
         
-        # Termo 1 (DC)
-        recept_main = get_receptance(idx_base_main)
-        term_1_main = (Z * Po * Fo) * recept_main
+        # Frequências
+        freqs = tandon_data['frequencies']
+        bpfi_hz = freqs['defect_freq_hz']
+        f_shaft_hz = freqs['shaft_freq_hz']
+
+        # ---------------------------------------------------------
+        # 3. Loop: Unificado (Para cada Harmônico Principal j)
+        # ---------------------------------------------------------
         
-        # Termo 2 (AC - Soma sobre s)
-        term_2_sum_main = 0.0
-        for s in range(1, max_s_iter + 1):
-            Fs_val = Fs_func(s)
+        for j in range(1, max_harmonics + 1):
             
-            # (Zj +/- s)
-            recept_plus = get_receptance(idx_base_main + s)
-            recept_minus = get_receptance(idx_base_main - s)
+            # --- PARTE A: CALCULAR PICO PRINCIPAL (Sideband_r = 0) ---
+            f_main_hz = j * bpfi_hz
+            w_main_rad = 2 * np.pi * f_main_hz
+            idx_base_main = Z * j
             
-            # Contribuição
-            term_s = (Z * Po * Fs_val / 2.0) * (recept_plus + recept_minus)
-            term_2_sum_main += term_s
+            # Termo 1 (DC)
+            recept_main = get_receptance(idx_base_main)
+            term_1_main = (Z * Po * Fo) * recept_main
             
-        Y_main_total = term_1_main + term_2_sum_main
-        Acc_main = abs(Y_main_total * (w_main_rad**2))
-        
-        results.append({
-            'Harmonic_j': j,
-            'Type': 'Main',
-            'Sideband_r': 0,
-            'Frequency_Hz': f_main_hz,
-            'Amplitude_Accel_m_s2': Acc_main
-        })
-        
-        # --- PARTE B: CALCULAR SIDEBANDS (Upper/Lower) ---
-        # Lógica da Eq. Sidebands Avancada
-        
-        for r_abs in range(1, num_sidebands + 1):
-            # Pr assume simetria
-            Pr_val = Pr_func(r_abs)
+            # Termo 2 (AC - Soma sobre s)
+            term_2_sum_main = 0.0
+            for s in range(1, max_s_iter + 1):
+                Fs_val = Fs_func(s)
+                
+                # (Zj +/- s)
+                recept_plus = get_receptance(idx_base_main + s)
+                recept_minus = get_receptance(idx_base_main - s)
+                
+                # Contribuição
+                term_s = (Z * Po * Fs_val / 2.0) * (recept_plus + recept_minus)
+                term_2_sum_main += term_s
+                
+            Y_main_total = term_1_main + term_2_sum_main
+            Acc_main = abs(Y_main_total * (w_main_rad**2))
             
-            for sideband_sign in [-1, 1]:
-                r = r_abs * sideband_sign
-                sb_type = "Sideband Upper" if r > 0 else "Sideband Lower"
+            all_results.append({
+                'Harmonic_j': j,
+                'Type': 'Main',
+                'Sideband_r': 0,
+                'Frequency_Hz': f_main_hz,
+                'Amplitude_Accel_m_s2': Acc_main,
+                'K': k_val
+            })
+            
+            # --- PARTE B: CALCULAR SIDEBANDS (Upper/Lower) ---
+            for r_abs in range(1, num_sidebands + 1):
+                # Pr assume simetria
+                Pr_val = Pr_func(r_abs)
                 
-                f_sb_hz = (j * bpfi_hz) + (r * f_shaft_hz)
-                
-                # Ignorar frequências negativas
-                if f_sb_hz <= 0:
-                    continue
-                
-                w_sb_rad = 2 * np.pi * f_sb_hz
-                
-                # Índice base para Sideband: (Z*j - r)
-                idx_base_sb = (Z * j) - r
-                
-                # Termo 1 (DC)
-                recept_sb = get_receptance(idx_base_sb)
-                Y_sb_term1 = (Z * Pr_val * Fo / 2.0) * recept_sb
-                
-                # Termo 2 (AC - Soma sobre s)
-                Y_sb_term2_sum = 0.0
-                for s in range(1, max_s_iter + 1):
-                    Fs_val = Fs_func(s)
+                for sideband_sign in [-1, 1]:
+                    r = r_abs * sideband_sign
+                    sb_type = "Sideband Upper" if r > 0 else "Sideband Lower"
                     
-                    # (Zj - r) +/- s
-                    recept_m = get_receptance(idx_base_sb - s)
-                    recept_p = get_receptance(idx_base_sb + s)
+                    f_sb_hz = (j * bpfi_hz) + (r * f_shaft_hz)
                     
-                    term_s_sb = (Z * Pr_val * Fs_val / 4.0) * (recept_m + recept_p)
-                    Y_sb_term2_sum += term_s_sb
+                    # Ignorar frequências negativas
+                    if f_sb_hz <= 0:
+                        continue
                     
-                Y_sb_total = Y_sb_term1 + Y_sb_term2_sum
-                Acc_sb = abs(Y_sb_total * (w_sb_rad**2))
-                
-                results.append({
-                    'Harmonic_j': j,
-                    'Type': sb_type,
-                    'Sideband_r': r_abs,
-                    'Frequency_Hz': f_sb_hz,
-                    'Amplitude_Accel_m_s2': Acc_sb
-                })
+                    w_sb_rad = 2 * np.pi * f_sb_hz
+                    
+                    # Índice base para Sideband: (Z*j - r)
+                    idx_base_sb = (Z * j) - r
+                    
+                    # Termo 1 (DC)
+                    recept_sb = get_receptance(idx_base_sb)
+                    Y_sb_term1 = (Z * Pr_val * Fo / 2.0) * recept_sb
+                    
+                    # Termo 2 (AC - Soma sobre s)
+                    Y_sb_term2_sum = 0.0
+                    for s in range(1, max_s_iter + 1):
+                        Fs_val = Fs_func(s)
+                        
+                        # (Zj - r) +/- s
+                        recept_m = get_receptance(idx_base_sb - s)
+                        recept_p = get_receptance(idx_base_sb + s)
+                        
+                        term_s_sb = (Z * Pr_val * Fs_val / 4.0) * (recept_m + recept_p)
+                        Y_sb_term2_sum += term_s_sb
+                        
+                    Y_sb_total = Y_sb_term1 + Y_sb_term2_sum
+                    Acc_sb = abs(Y_sb_total * (w_sb_rad**2))
+                    
+                    all_results.append({
+                        'Harmonic_j': j,
+                        'Type': sb_type,
+                        'Sideband_r': r_abs,
+                        'Frequency_Hz': f_sb_hz,
+                        'Amplitude_Accel_m_s2': Acc_sb,
+                        'K': k_val
+                    })
                 
     # ---------------------------------------------------------
     # 4. Finalização
     # ---------------------------------------------------------
-    df = pd.DataFrame(results)
-    # Ordenar por frequência para visualização clara do espectro
-    df = df.sort_values(by='Frequency_Hz').reset_index(drop=True)
+    df = pd.DataFrame(all_results)
+    # Ordenar por K e depois frequência
+    df = df.sort_values(by=['K', 'Frequency_Hz']).reset_index(drop=True)
     return df
 
 
@@ -470,76 +474,68 @@ def calcular_espectro_outer_race(fault_diameter_mm, rpm, max_harmonics=10, K=1.0
     - get_bearing_natural_frequencies
     """
     
-    # 1. Obter Coeficientes de Tandon (Po, Fs, Pmax, etc.)
-    # Chamamos a função passando 'outer' para configurar as frequências corretamente
-    tandon_data = calculate_tandon_coefficients(fault_diameter_mm, rpm, fault_type='outer', K=K)
-    
-    # Extração de parâmetros críticos
-    P_max = tandon_data['debug_info']['P_max_N']  # Carga máxima (centro da zona)
-    func_Fs = tandon_data['Fs']                    # Função callable para harmônicos do pulso
-    fc_Hz = tandon_data['frequencies']['cage_freq_hz'] # Frequência da gaiola
-    
-    # 2. Obter Propriedades Modais (Frequências Naturais e Massas)
+    # Normalizar K para lista
+    k_values = [K] if np.isscalar(K) else K
+
+    # 1. Obter Propriedades Modais (Frequências Naturais e Massas) - Invariantes com K
     df_nat_freq = get_bearing_natural_frequencies()
     # Filtramos apenas para o anel externo (Outer)
     df_outer = df_nat_freq[df_nat_freq['Race'] == 'Outer']
-    
-    # Constante Z (Número de esferas) - Hardcoded em 9
     Z = 9 
     
-    # Listas para armazenar o espectro
-    freqs_hz = []
-    ampls_accel = []
-    
-    # 3. Loop pelos Harmônicos da BPFO (j = 1, 2, ..., max_harmonics)
-    # A falha de pista externa gera picos em Z * fc, 2Z * fc, etc.
-    for j in range(1, max_harmonics + 1):
+    all_results = []
+
+    # Loop para iterar sobre K
+    for k_val in k_values:
+        # 2. Obter Coeficientes de Tandon
+        tandon_data = calculate_tandon_coefficients(fault_diameter_mm, rpm, fault_type='outer', K=k_val)
         
-        # --- Passo A: Frequência do Harmônico ---
-        # Frequência de interesse: j-ésimo harmônico da BPFO
-        f_harmonic_Hz = j * Z * fc_Hz
-        w_harmonic_rad = 2 * np.pi * f_harmonic_Hz
+        # Extração de parâmetros críticos
+        P_max = tandon_data['debug_info']['P_max_N']  # Carga máxima (centro da zona)
+        func_Fs = tandon_data['Fs']                    # Função callable para harmônicos do pulso
+        fc_Hz = tandon_data['frequencies']['cage_freq_hz'] # Frequência da gaiola
         
-        # O índice 's' para buscar o coeficiente de Fourier do pulso é Z*j
-        s = Z * j
-        
-        # --- Passo B: Força de Excitação ---
-        # Coeficiente do pulso para este harmônico
-        F_zj = func_Fs(s)
-        
-        # Força Base = P_max * Z * F_zj
-        # P_max é usado pois a falha está no centro da zona de carga (xi = 0)
-        force_component = P_max * Z * F_zj
-        
-        # --- Passo C: Receptância (Somatório dos Modos) ---
-        # Eq 20: Soma [ Xi(xi) / (Mi * wi^2) ]
-        # Para xi=0, Xi(xi) = 1.
-        sum_receptance = 0.0
-        
-        for _, row in df_outer.iterrows():
-            wi = row['Freq_rad_s']
-            Mi = row['Mass_kg']
+        # 3. Loop pelos Harmônicos da BPFO (j = 1, 2, ..., max_harmonics)
+        for j in range(1, max_harmonics + 1):
             
-            # Adiciona a contribuição deste modo (1 / k_dinamico)
-            if wi > 0:
-                sum_receptance += 1.0 / (Mi * (wi**2))
-        
-        # --- Passo D: Deslocamento (Y) ---
-        Y_displacement_m = force_component * sum_receptance
-        
-        # --- Passo E: Aceleração (A) ---
-        # A = Y * w^2 (m/s²)
-        accel_ms2 = Y_displacement_m * (w_harmonic_rad**2)
-        
-        freqs_hz.append(f_harmonic_Hz)
-        ampls_accel.append(accel_ms2)
-        
+            # --- Passo A: Frequência do Harmônico ---
+            f_harmonic_Hz = j * Z * fc_Hz
+            w_harmonic_rad = 2 * np.pi * f_harmonic_Hz
+            
+            s = Z * j
+            
+            # --- Passo B: Força de Excitação ---
+            F_zj = func_Fs(s)
+            force_component = P_max * Z * F_zj
+            
+            # --- Passo C: Receptância (Somatório dos Modos) ---
+            sum_receptance = 0.0
+            
+            for _, row in df_outer.iterrows():
+                wi = row['Freq_rad_s']
+                Mi = row['Mass_kg']
+                
+                # Adiciona a contribuição deste modo (1 / k_dinamico)
+                if wi > 0:
+                    sum_receptance += 1.0 / (Mi * (wi**2))
+            
+            # --- Passo D: Deslocamento (Y) ---
+            Y_displacement_m = force_component * sum_receptance
+            
+            # --- Passo E: Aceleração (A) ---
+            accel_ms2 = Y_displacement_m * (w_harmonic_rad**2)
+            
+            all_results.append({
+                'Harmonic_Order': j,
+                'Frequency_Hz': f_harmonic_Hz,
+                'Amplitude_m_s2': accel_ms2,
+                'K': k_val
+            })
+            
     # Retorna DataFrame
-    return pd.DataFrame({
-        'Harmonic_Order': range(1, max_harmonics + 1),
-        'Frequency_Hz': freqs_hz,
-        'Amplitude_m_s2': ampls_accel
-    })
+    df = pd.DataFrame(all_results)
+    df = df.sort_values(by=['K', 'Frequency_Hz']).reset_index(drop=True)
+    return df
 
 
 # =============================================================================
@@ -552,41 +548,21 @@ def calcular_espectro_ball_completo(
     max_harmonics=5,     # Quantos picos principais (j)
     num_sidebands=3,     # Quantos sidebands (r) ao redor de cada j
     max_s_iter=50,       # Limite da somatória interna do pulso
-    K=1.0                # Pulse height coefficient
+    K=1.0                # Pulse height coefficient (float or list)
 ):
     """
     Calcula o espectro COMPLETO (Picos Principais + Sidebands) para falha de Esfera (Ball).
-    
-    Main peaks at: 2*j*ω_b
-    Sidebands at: 2*j*ω_b ± r*ω_c
-    
-    A diferença para inner race é que ball defects excitam AMBOS os anéis (inner e outer),
-    então temos termos M_{2j} (inner) e M'_{2j} (outer) nas equações.
+    Suporta K como lista de valores.
     
     Retorna:
-        pd.DataFrame contendo todas as frequências (Principais e Sidebands) calculadas,
-        ordenadas por frequência.
+        pd.DataFrame com colunas Frequency_Hz, Amplitude_Accel_m_s2 e K.
     """
     
-    # ---------------------------------------------------------
-    # 1. Obter Coeficientes de Tandon e Frequências
-    # ---------------------------------------------------------
-    tandon_data = calculate_tandon_coefficients(fault_diameter_mm, rpm, fault_type='ball', K=K)
-    
-    Po = tandon_data['Po']
-    Fo = tandon_data['Fo']
-    
-    # Funções callable
-    Pr_func = tandon_data['Pr']
-    Fs_func = tandon_data['Fs']
-    
-    # Frequências
-    freqs = tandon_data['frequencies']
-    ball_spin_hz = freqs['defect_freq_hz'] / 2  # ω_b = (defect_freq) / 2, pois defect_freq = 2*ω_b
-    cage_freq_hz = freqs['cage_freq_hz']
+    # Normalizar K
+    k_values = [K] if np.isscalar(K) else K
     
     # ---------------------------------------------------------
-    # 2. Obter Modos Naturais (INNER e OUTER) e Criar Lookups
+    # 1. Preparar Modos Naturais (Invariante com K)
     # ---------------------------------------------------------
     df_nat_freq = get_bearing_natural_frequencies() 
     df_inner = df_nat_freq[df_nat_freq['Race'] == 'Inner'].reset_index(drop=True)
@@ -618,120 +594,114 @@ def calcular_espectro_ball_completo(
         k_abs = abs(int(k))
         return dict_modes_outer.get(k_abs, 0.0)
 
-    results = []
-    
-    # ---------------------------------------------------------
-    # 3. Loop: Unificado (Para cada Harmônico Principal j)
-    # ---------------------------------------------------------
-    
-    for j in range(1, max_harmonics + 1):
+    all_results = []
+
+    # Loop para iterar sobre K
+    for k_val in k_values:
+        # ---------------------------------------------------------
+        # 2. Obter Coeficientes de Tandon (Dependem de K)
+        # ---------------------------------------------------------
+        tandon_data = calculate_tandon_coefficients(fault_diameter_mm, rpm, fault_type='ball', K=k_val)
         
-        # --- PARTE A: CALCULAR PICO PRINCIPAL (Sideband_r = 0) ---
-        # Frequência: 2*j*ω_b
-        f_main_hz = 2 * j * ball_spin_hz
-        w_main_rad = 2 * np.pi * f_main_hz
+        Po = tandon_data['Po']
+        Fo = tandon_data['Fo']
         
-        # Índice base: 2j
-        idx_base_main = 2 * j
+        Pr_func = tandon_data['Pr']
+        Fs_func = tandon_data['Fs']
         
-        # Termo 1 (DC): P_o * F_o * [1/(M_{2j}*ω²) + 1/(M'_{2j}*ω'²)]
-        recept_inner = get_receptance_inner(idx_base_main)
-        recept_outer = get_receptance_outer(idx_base_main)
-        term_1_main = Po * Fo * (recept_inner + recept_outer)
+        freqs = tandon_data['frequencies']
+        ball_spin_hz = freqs['defect_freq_hz'] / 2
+        cage_freq_hz = freqs['cage_freq_hz']
         
-        # Termo 2 (AC - Soma sobre s): Sum_s (P_o/2) * F_s * [inner + outer]
-        term_2_sum_main = 0.0
-        for s in range(1, max_s_iter + 1):
-            Fs_val = Fs_func(s)
+        # ---------------------------------------------------------
+        # 3. Loop: Unificado
+        # ---------------------------------------------------------
+        
+        for j in range(1, max_harmonics + 1):
             
-            # (2j +/- s) para inner
-            recept_inner_plus = get_receptance_inner(idx_base_main + s)
-            recept_inner_minus = get_receptance_inner(idx_base_main - s)
+            # --- PARTE A: CALCULAR PICO PRINCIPAL (Sideband_r = 0) ---
+            f_main_hz = 2 * j * ball_spin_hz
+            w_main_rad = 2 * np.pi * f_main_hz
+            idx_base_main = 2 * j
             
-            # (2j +/- s) para outer
-            recept_outer_plus = get_receptance_outer(idx_base_main + s)
-            recept_outer_minus = get_receptance_outer(idx_base_main - s)
+            recept_inner = get_receptance_inner(idx_base_main)
+            recept_outer = get_receptance_outer(idx_base_main)
+            term_1_main = Po * Fo * (recept_inner + recept_outer)
             
-            # Soma contribuições
-            term_s = (Po / 2.0) * Fs_val * (
-                recept_inner_plus + recept_inner_minus + 
-                recept_outer_plus + recept_outer_minus
-            )
-            term_2_sum_main += term_s
+            term_2_sum_main = 0.0
+            for s in range(1, max_s_iter + 1):
+                Fs_val = Fs_func(s)
+                recept_inner_plus = get_receptance_inner(idx_base_main + s)
+                recept_inner_minus = get_receptance_inner(idx_base_main - s)
+                recept_outer_plus = get_receptance_outer(idx_base_main + s)
+                recept_outer_minus = get_receptance_outer(idx_base_main - s)
+                
+                term_s = (Po / 2.0) * Fs_val * (
+                    recept_inner_plus + recept_inner_minus + 
+                    recept_outer_plus + recept_outer_minus
+                )
+                term_2_sum_main += term_s
+                
+            Y_main_total = term_1_main + term_2_sum_main
+            Acc_main = abs(Y_main_total * (w_main_rad**2))
             
-        Y_main_total = term_1_main + term_2_sum_main
-        Acc_main = abs(Y_main_total * (w_main_rad**2))
-        
-        results.append({
-            'Harmonic_j': j,
-            'Type': 'Main',
-            'Sideband_r': 0,
-            'Frequency_Hz': f_main_hz,
-            'Amplitude_Accel_m_s2': Acc_main
-        })
-        
-        # --- PARTE B: CALCULAR SIDEBANDS (Upper/Lower) ---
-        # Frequências: 2*j*ω_b ± r*ω_c
-        
-        for r_abs in range(1, num_sidebands + 1):
-            # Pr assume simetria
-            Pr_val = Pr_func(r_abs)
+            all_results.append({
+                'Harmonic_j': j,
+                'Type': 'Main',
+                'Sideband_r': 0,
+                'Frequency_Hz': f_main_hz,
+                'Amplitude_Accel_m_s2': Acc_main,
+                'K': k_val
+            })
             
-            for sideband_sign in [-1, 1]:
-                r = r_abs * sideband_sign
-                sb_type = "Sideband Upper" if r > 0 else "Sideband Lower"
+            # --- PARTE B: CALCULAR SIDEBANDS (Upper/Lower) ---
+            for r_abs in range(1, num_sidebands + 1):
+                Pr_val = Pr_func(r_abs)
                 
-                f_sb_hz = (2 * j * ball_spin_hz) + (r * cage_freq_hz)
-                
-                # Ignorar frequências negativas
-                if f_sb_hz <= 0:
-                    continue
-                
-                w_sb_rad = 2 * np.pi * f_sb_hz
-                
-                # Índice base para Sideband: 2j (não muda com r, diferente do inner)
-                idx_base_sb = 2 * j
-                
-                # Termo 1 (DC): (P_r/2) * F_o * [inner + outer]
-                recept_inner_sb = get_receptance_inner(idx_base_sb)
-                recept_outer_sb = get_receptance_outer(idx_base_sb)
-                Y_sb_term1 = (Pr_val / 2.0) * Fo * (recept_inner_sb + recept_outer_sb)
-                
-                # Termo 2 (AC - Soma sobre s): Sum_s (P_r/2) * F_s * [inner + outer]
-                Y_sb_term2_sum = 0.0
-                for s in range(1, max_s_iter + 1):
-                    Fs_val = Fs_func(s)
+                for sideband_sign in [-1, 1]:
+                    r = r_abs * sideband_sign
+                    sb_type = "Sideband Upper" if r > 0 else "Sideband Lower"
                     
-                    # (2j +/- s) para inner
-                    recept_inner_m = get_receptance_inner(idx_base_sb - s)
-                    recept_inner_p = get_receptance_inner(idx_base_sb + s)
+                    f_sb_hz = (2 * j * ball_spin_hz) + (r * cage_freq_hz)
+                    if f_sb_hz <= 0: continue
+                    w_sb_rad = 2 * np.pi * f_sb_hz
+                    idx_base_sb = 2 * j
                     
-                    # (2j +/- s) para outer
-                    recept_outer_m = get_receptance_outer(idx_base_sb - s)
-                    recept_outer_p = get_receptance_outer(idx_base_sb + s)
+                    recept_inner_sb = get_receptance_inner(idx_base_sb)
+                    recept_outer_sb = get_receptance_outer(idx_base_sb)
+                    Y_sb_term1 = (Pr_val / 2.0) * Fo * (recept_inner_sb + recept_outer_sb)
                     
-                    term_s_sb = (Pr_val / 2.0) * Fs_val * (
-                        recept_inner_m + recept_inner_p + 
-                        recept_outer_m + recept_outer_p
-                    )
-                    Y_sb_term2_sum += term_s_sb
+                    Y_sb_term2_sum = 0.0
+                    for s in range(1, max_s_iter + 1):
+                        Fs_val = Fs_func(s)
+                        recept_inner_m = get_receptance_inner(idx_base_sb - s)
+                        recept_inner_p = get_receptance_inner(idx_base_sb + s)
+                        recept_outer_m = get_receptance_outer(idx_base_sb - s)
+                        recept_outer_p = get_receptance_outer(idx_base_sb + s)
+                        
+                        term_s_sb = (Pr_val / 2.0) * Fs_val * (
+                            recept_inner_m + recept_inner_p + 
+                            recept_outer_m + recept_outer_p
+                        )
+                        Y_sb_term2_sum += term_s_sb
+                        
+                    Y_sb_total = Y_sb_term1 + Y_sb_term2_sum
+                    Acc_sb = abs(Y_sb_total * (w_sb_rad**2))
                     
-                Y_sb_total = Y_sb_term1 + Y_sb_term2_sum
-                Acc_sb = abs(Y_sb_total * (w_sb_rad**2))
-                
-                results.append({
-                    'Harmonic_j': j,
-                    'Type': sb_type,
-                    'Sideband_r': r_abs,
-                    'Frequency_Hz': f_sb_hz,
-                    'Amplitude_Accel_m_s2': Acc_sb
-                })
+                    all_results.append({
+                        'Harmonic_j': j,
+                        'Type': sb_type,
+                        'Sideband_r': r_abs,
+                        'Frequency_Hz': f_sb_hz,
+                        'Amplitude_Accel_m_s2': Acc_sb,
+                        'K': k_val
+                    })
                 
     # ---------------------------------------------------------
     # 4. Finalização
     # ---------------------------------------------------------
-    df = pd.DataFrame(results)
-    df = df.sort_values(by='Frequency_Hz').reset_index(drop=True)
+    df = pd.DataFrame(all_results)
+    df = df.sort_values(by=['K', 'Frequency_Hz']).reset_index(drop=True)
     return df
 
 if __name__ == "__main__":
