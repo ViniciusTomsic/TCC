@@ -87,7 +87,8 @@ def main():
             'fault_type': 'Normal',
             'diameter': None,
             'k_val': None,
-            'signal': signal
+            'signal': signal,
+            'pure_signal': np.zeros_like(signal)
         })
     print(f"Added {len(generated_data)} normal segments.")
 
@@ -152,7 +153,10 @@ def main():
                             'fault_type': f_type,
                             'diameter': diam,
                             'k_val': k_val,
-                            'signal': combined_sig
+                            'diameter': diam,
+                            'k_val': k_val,
+                            'signal': combined_sig,
+                            'pure_signal': syn_sig
                         })
 
     # 6. Combine to DataFrame
