@@ -15,7 +15,11 @@ import segment_and_split_data as ssd
 # CONFIGURATION
 # =============================================================================
 DIAMETERS = [0.2, 0.5, 1.0, 1.2]
-K_VALUES = {'inner': 0.1, 'outer': 0.008, 'ball': 0.05}
+K_VALUES = {
+    'inner': [0.05, 0.1, 0.2], 
+    'outer': [0.004, 0.008, 0.016], 
+    'ball': [0.025, 0.05, 0.1]
+}
 RPMS = [1730, 1750, 1772, 1797]
 FS = 12000  # Sampling rate
 NUM_RANDOM_SEGMENTS = 10  # Number of random normal segments to use as baselines
@@ -119,37 +123,37 @@ def main():
 
         for baseline_sig in baseline_signals:
             for f_type in ['inner', 'outer', 'ball']:
-                k_val = K_VALUES[f_type]
-                for diam in DIAMETERS:
-                    
-                    # Calculate Spectrum
-                    if f_type == 'inner':
-                        spec_df = bu.calcular_espectro_inner_completo(diam, rpm, K=k_val)
-                    elif f_type == 'outer':
-                        spec_df = bu.calcular_espectro_outer_race(diam, rpm, K=k_val)
-                    elif f_type == 'ball':
-                        spec_df = bu.calcular_espectro_ball_completo(diam, rpm, K=k_val)
-                    
-                    # Synthesize Time Domain
-                    syn_sig = synthesize_time_signal(spec_df, duration=duration_seg, fs=FS)
-                    
-                    # Length Check & Alignment
-                    if len(syn_sig) > len(baseline_sig):
-                        syn_sig = syn_sig[:len(baseline_sig)]
-                    elif len(syn_sig) < len(baseline_sig):
-                        syn_sig = np.pad(syn_sig, (0, len(baseline_sig) - len(syn_sig)))
-                    
-                    # SUPERIMPOSITION (Normal + Synthetic Fault)
-                    combined_sig = baseline_sig + syn_sig
-                    
-                    # Add to dataset
-                    generated_data.append({
-                        'rpm': rpm,
-                        'fault_type': f_type,
-                        'diameter': diam,
-                        'k_val': k_val,
-                        'signal': combined_sig
-                    })
+                for k_val in K_VALUES[f_type]:
+                    for diam in DIAMETERS:
+                        
+                        # Calculate Spectrum
+                        if f_type == 'inner':
+                            spec_df = bu.calcular_espectro_inner_completo(diam, rpm, K=k_val)
+                        elif f_type == 'outer':
+                            spec_df = bu.calcular_espectro_outer_race(diam, rpm, K=k_val)
+                        elif f_type == 'ball':
+                            spec_df = bu.calcular_espectro_ball_completo(diam, rpm, K=k_val)
+                        
+                        # Synthesize Time Domain
+                        syn_sig = synthesize_time_signal(spec_df, duration=duration_seg, fs=FS)
+                        
+                        # Length Check & Alignment
+                        if len(syn_sig) > len(baseline_sig):
+                            syn_sig = syn_sig[:len(baseline_sig)]
+                        elif len(syn_sig) < len(baseline_sig):
+                            syn_sig = np.pad(syn_sig, (0, len(baseline_sig) - len(syn_sig)))
+                        
+                        # SUPERIMPOSITION (Normal + Synthetic Fault)
+                        combined_sig = baseline_sig + syn_sig
+                        
+                        # Add to dataset
+                        generated_data.append({
+                            'rpm': rpm,
+                            'fault_type': f_type,
+                            'diameter': diam,
+                            'k_val': k_val,
+                            'signal': combined_sig
+                        })
 
     # 6. Combine to DataFrame
     final_df = pd.DataFrame(generated_data)
