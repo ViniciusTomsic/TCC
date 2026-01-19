@@ -515,9 +515,12 @@ def calcular_espectro_outer_race(fault_diameter_mm, rpm, max_harmonics=9, K=1.0)
                 wi = row['Freq_rad_s']
                 Mi = row['Mass_kg']
                 
-                # Adiciona a contribuição deste modo (1 / k_dinamico)
-                if wi > 0:
-                    sum_receptance += 1.0 / (Mi * (wi**2))
+                # Adiciona a contribuição deste modo (Receptância Dinâmica)
+                # Eq: 1 / [M * (wn^2 - w^2)]
+                if wi > 0 and Mi > 0:
+                    denom = Mi * (wi**2 - w_harmonic_rad**2)
+                    if denom != 0:
+                        sum_receptance += 1.0 / denom
             
             # --- Passo D: Deslocamento (Y) ---
             Y_displacement_m = force_component * sum_receptance
