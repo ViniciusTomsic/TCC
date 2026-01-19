@@ -12,13 +12,24 @@ from scipy.fft import fft, fftfreq
 import segment_and_split_data as ssd
 from generate_impulse_data import gerar_dados_sinteticos_treino, params_drive_end, amplitudes_referencia
 
-def visualizar_sinais_impulso():
+def visualizar_sinais_impulso(selected_rpm=1730, save_path=None):
     print("--- Preparando Visualização ---")
     
-    # 1. Selecionar um subset pequeno (apenas 1 segmento normal) para teste rápido
-    keys_subset = list(ssd.dicionario_treino.keys())[:1]
-    dicionario_subset = {k: ssd.dicionario_treino[k] for k in keys_subset}
-    print(f"Usando segmento base: {keys_subset[0]}")
+    # 1. Selecionar um subset com o RPM especificado
+    dicionario_subset = {}
+    for k, df in ssd.dicionario_treino.items():
+        if df['rotacao_rpm'].iloc[0] == selected_rpm:
+            dicionario_subset[k] = df
+            break
+    
+    # Se não encontrar, usar o primeiro disponível
+    if not dicionario_subset:
+        keys_subset = list(ssd.dicionario_treino.keys())[:1]
+        dicionario_subset = {k: ssd.dicionario_treino[k] for k in keys_subset}
+        selected_rpm = dicionario_subset[list(dicionario_subset.keys())[0]]['rotacao_rpm'].iloc[0]
+        print(f"Warning: RPM exato não encontrado, usando RPM {selected_rpm}")
+    
+    print(f"Usando segmento base com RPM {selected_rpm}: {list(dicionario_subset.keys())[0]}")
 
     # 2. Gerar dados sintéticos
     # Usando multiplicador alto (e.g. 5 ou 10) para destacar bem os impulsos no plot
@@ -30,7 +41,6 @@ def visualizar_sinais_impulso():
         amplitudes_referencia=amplitudes_referencia,
         multiplicadores=[5],  # Amplitude x5 para visualização clara
         fases_para_adicionar_rad=[0], # Apenas fase 0
-        freq_natural_hz=3278,
         damping_ratio=0.1,
         duracao_pulso_seg=0.1, # Pulso curto
         profundidade_modulacao=0.5
@@ -107,9 +117,16 @@ def visualizar_sinais_impulso():
             # Adicione markers se desejar, mas o visual já ajuda
             
     print("Plot gerado com sucesso!")
+    
+    # Save if path provided
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Plot saved to: {save_path}")
+    
     return fig
 
 # Se rodar este script diretamente pelo terminal:
 if __name__ == "__main__":
-    visualizar_sinais_impulso()
-    plt.show()
+    fig = visualizar_sinais_impulso(selected_rpm=1730, save_path="impulse_signals_visualization.png")
+    print("Visualization complete!")
+

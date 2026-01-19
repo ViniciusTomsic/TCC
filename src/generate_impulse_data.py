@@ -7,6 +7,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import segment_and_split_data as ssd
+import bearing_utils as bu
 
 # =============================================================================
 # CONFIGURATION
@@ -43,7 +44,6 @@ def gerar_dados_sinteticos_treino(
     amplitudes_referencia,
     multiplicadores=[2, 5, 10],
     fases_para_adicionar_rad=[0, np.pi/2, np.pi, 3*np.pi/2],
-    freq_natural_hz=3278,
     damping_ratio=0.1,
     duracao_pulso_seg=0.1,
     profundidade_modulacao=0.5
@@ -66,7 +66,23 @@ def gerar_dados_sinteticos_treino(
             'FTF': freq_ftf
         }
 
-    def criar_resposta_impulso(taxa_amostral, freq_natural, damping, duracao_pulso):
+    def criar_resposta_impulso(taxa_amostral, tipo_falha, damping, duracao_pulso):
+        """
+        Cria resposta ao impulso que oscila na frequência natural do anel.
+        
+        Args:
+            taxa_amostral: Taxa de amostragem (Hz)
+            tipo_falha: 'Pista Externa', 'Pista Interna' ou 'Esfera'
+            damping: Razão de amortecimento
+            duracao_pulso: Duração do impulso (segundos)
+        """
+        # Usar cache de frequências naturais
+        if tipo_falha == 'Pista Externa':
+            freq_natural = freq_nat_outer
+        else:  # Pista Interna ou Esfera
+            freq_natural = freq_nat_inner
+        
+        # Gerar impulso
         n_pontos_pulso = int(duracao_pulso * taxa_amostral)
         if n_pontos_pulso == 0: n_pontos_pulso = 1
         t_pulse = np.linspace(0, duracao_pulso, n_pontos_pulso, endpoint=False)
@@ -74,6 +90,15 @@ def gerar_dados_sinteticos_treino(
         omega_d = 2 * np.pi * freq_natural * np.sqrt(1 - damping**2)
         pulso = np.exp(-A * t_pulse) * np.sin(omega_d * t_pulse)
         return pulso
+    
+    # --- 2. OBTER FREQUÊNCIAS NATURAIS (UMA VEZ APENAS) ---
+    df_nat_freq = bu.get_bearing_natural_frequencies()
+    df_outer = df_nat_freq[df_nat_freq['Race'] == 'Outer']
+    df_inner = df_nat_freq[df_nat_freq['Race'] == 'Inner']
+    freq_nat_outer = df_outer.iloc[0]['Freq_Hz']
+    freq_nat_inner = df_inner.iloc[0]['Freq_Hz']
+    
+    print(f"Usando frequências naturais: Outer={freq_nat_outer:.1f} Hz, Inner={freq_nat_inner:.1f} Hz")
 
     # --- 2. IDENTIFICAÇÃO DOS SEGMENTOS NORMAIS ---
     segmentos_normais_treino = {
@@ -85,16 +110,8 @@ def gerar_dados_sinteticos_treino(
         print("AVISO: Nenhum segmento normal encontrado no dicionário de treino.")
         return pd.DataFrame()
 
-    # --- 3. CRIAÇÃO DA RESPOSTA AO IMPULSO ---
-    resposta_impulso_unitaria = criar_resposta_impulso(
-        TAXA_AMOSTRAL, freq_natural_hz, damping_ratio, duracao_pulso_seg
-    )
-    max_abs_val = np.max(np.abs(resposta_impulso_unitaria))
-    if max_abs_val > 0:
-        resposta_impulso_unitaria /= max_abs_val
-
     # Print de status importante
-    print(f"Gerando Sinais... (fn={freq_natural_hz}Hz, damp={damping_ratio}, dur={duracao_pulso_seg}s, mod={profundidade_modulacao})")
+    print(f"Gerando Sinais... (damp={damping_ratio}, dur={duracao_pulso_seg}s, mod={profundidade_modulacao})")
 
     # --- 4. GERAÇÃO E COMBINAÇÃO DOS SINAIS ---
     lista_sinais_treino = []
@@ -116,6 +133,15 @@ def gerar_dados_sinteticos_treino(
             freq_teorica = freqs_teoricas[tipo_falha_sintetica]
             amp_ref = amplitudes_referencia['Drive End'][tipo_falha_sintetica]
 
+            # Criar resposta ao impulso específica para este tipo de falha
+            resposta_impulso = criar_resposta_impulso(
+                TAXA_AMOSTRAL, tipo_falha_sintetica, damping_ratio, duracao_pulso_seg
+            )
+            # Normalizar
+            max_abs_val = np.max(np.abs(resposta_impulso))
+            if max_abs_val > 0:
+                resposta_impulso /= max_abs_val
+
             trem_de_impulsos = np.zeros(N_PONTOS)
             periodo_falha_seg = 1.0 / freq_teorica
             ts_segundos = 1.0 / TAXA_AMOSTRAL 
@@ -126,17 +152,10 @@ def gerar_dados_sinteticos_treino(
                 if idx < N_PONTOS:
                     trem_de_impulsos[idx] = 1.0
             
-            sinal_falha_ringing = np.convolve(trem_de_impulsos, resposta_impulso_unitaria, mode='same')
+            sinal_falha_ringing = np.convolve(trem_de_impulsos, resposta_impulso, mode='same')
             
-            if tipo_falha_sintetica == 'Pista Externa':
-                sinal_falha_bruto = sinal_falha_ringing
-            elif tipo_falha_sintetica == 'Pista Interna':
-                modulador_fr = (1 + profundidade_modulacao * np.sin(2 * np.pi * fr_hz * t))
-                sinal_falha_bruto = sinal_falha_ringing * modulador_fr
-            elif tipo_falha_sintetica == 'Esfera':
-                freq_ftf = freqs_teoricas['FTF']
-                modulador_ftf = (1 + profundidade_modulacao * np.sin(2 * np.pi * freq_ftf * t))
-                sinal_falha_bruto = sinal_falha_ringing * modulador_ftf
+            # Sem modulação (falha gerada apenas na frequência característica)
+            sinal_falha_bruto = sinal_falha_ringing
                 
             for mult in multiplicadores:
                 for fase in fases_para_adicionar_rad:

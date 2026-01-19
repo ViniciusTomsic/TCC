@@ -12,12 +12,11 @@ import segment_and_split_data as ssd
 import generate_synthetic_data as gsd
 import bearing_utils as bu
 
-def visualize_fft_signals():
+def visualize_fft_signals(selected_rpm=1730, save_path=None):
     print("--- Preparing FFT Signal Visualization ---")
     
     # 1. Configuration
     # Select one example context
-    selected_rpm = 1730
     fs = 12000
     
     print(f"Generating on-the-fly synthetic examples for RPM {selected_rpm}...")
@@ -125,8 +124,15 @@ def visualize_fft_signals():
         ax_f.grid(True, alpha=0.3)
     
     print("Plot generation successful!")
+    
+    # Save if path provided
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Plot saved to: {save_path}")
+    
     return fig
 
 if __name__ == "__main__":
-    visualize_fft_signals()
-    plt.show()
+    fig = visualize_fft_signals(selected_rpm=1730, save_path="fft_signals_visualization.png")
+    print("Visualization complete!")
+
