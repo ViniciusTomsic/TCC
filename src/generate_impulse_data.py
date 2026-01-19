@@ -26,9 +26,9 @@ params_drive_end = {
 # TODO: Adjust these values based on observed real fault amplitudes
 amplitudes_referencia = {
     'Drive End': {
-        'Pista Externa': 0.5,
-        'Pista Interna': 0.5,
-        'Esfera': 0.5,
+        'Pista Externa': 0.4,
+        'Pista Interna': 0.4,
+        'Esfera': 0.4,
         'FTF': 0.5 # Included just in case
     }
 }
@@ -66,39 +66,72 @@ def gerar_dados_sinteticos_treino(
             'FTF': freq_ftf
         }
 
-    def criar_resposta_impulso(taxa_amostral, tipo_falha, damping, duracao_pulso):
+    def criar_resposta_impulso(taxa_amostral, tipo_falha, damping, duracao_pulso, num_modos=10):
         """
-        Cria resposta ao impulso que oscila na frequência natural do anel.
+        Cria resposta ao impulso como soma ponderada de múltiplas frequências naturais.
+        
+        Quando um impacto ocorre no rolamento, múltiplos modos vibracionais são excitados
+        simultaneamente. Esta função modela isso somando as contribuições de vários modos,
+        cada um ponderado pela sua receptância (1/(M*ω²)).
         
         Args:
             taxa_amostral: Taxa de amostragem (Hz)
             tipo_falha: 'Pista Externa', 'Pista Interna' ou 'Esfera'
             damping: Razão de amortecimento
             duracao_pulso: Duração do impulso (segundos)
+            num_modos: Número de modos vibracionais a incluir (default: 10)
         """
-        # Usar cache de frequências naturais
+        # Selecionar DataFrame de frequências naturais baseado no tipo de falha
         if tipo_falha == 'Pista Externa':
-            freq_natural = freq_nat_outer
+            df_race = df_nat_freq_outer
         else:  # Pista Interna ou Esfera
-            freq_natural = freq_nat_inner
+            df_race = df_nat_freq_inner
         
-        # Gerar impulso
+        # Pegar os primeiros N modos
+        modos = df_race.head(num_modos)
+        
+        # Gerar vetor de tempo
         n_pontos_pulso = int(duracao_pulso * taxa_amostral)
         if n_pontos_pulso == 0: n_pontos_pulso = 1
         t_pulse = np.linspace(0, duracao_pulso, n_pontos_pulso, endpoint=False)
-        A = damping * 2 * np.pi * freq_natural
-        omega_d = 2 * np.pi * freq_natural * np.sqrt(1 - damping**2)
-        pulso = np.exp(-A * t_pulse) * np.sin(omega_d * t_pulse)
-        return pulso
+        
+        # Inicializar pulso total
+        pulso_total = np.zeros(n_pontos_pulso)
+        
+        # Somar contribuição de cada modo vibracional
+        for _, modo in modos.iterrows():
+            freq_natural = modo['Freq_Hz']
+            mass = modo['Mass_kg']
+            omega_n = 2 * np.pi * freq_natural
+            
+            # Receptância modal (inversamente proporcional à rigidez modal)
+            # Quanto maior a receptância, maior a resposta deste modo ao impulso
+            if omega_n > 0:
+                receptance = 1.0 / (mass * omega_n**2)
+            else:
+                continue  # Pular modos inválidos
+            
+            # Gerar impulso amortecido para este modo
+            A = damping * omega_n
+            omega_d = omega_n * np.sqrt(1 - damping**2)
+            pulso_modo = receptance * np.exp(-A * t_pulse) * np.sin(omega_d * t_pulse)
+            
+            # Adicionar ao pulso total
+            pulso_total += pulso_modo
+        
+        return pulso_total
     
     # --- 2. OBTER FREQUÊNCIAS NATURAIS (UMA VEZ APENAS) ---
     df_nat_freq = bu.get_bearing_natural_frequencies()
-    df_outer = df_nat_freq[df_nat_freq['Race'] == 'Outer']
-    df_inner = df_nat_freq[df_nat_freq['Race'] == 'Inner']
-    freq_nat_outer = df_outer.iloc[0]['Freq_Hz']
-    freq_nat_inner = df_inner.iloc[0]['Freq_Hz']
+    df_nat_freq_outer = df_nat_freq[df_nat_freq['Race'] == 'Outer'].reset_index(drop=True)
+    df_nat_freq_inner = df_nat_freq[df_nat_freq['Race'] == 'Inner'].reset_index(drop=True)
     
-    print(f"Usando frequências naturais: Outer={freq_nat_outer:.1f} Hz, Inner={freq_nat_inner:.1f} Hz")
+    # Para logging, mostrar a primeira e algumas frequências principais
+    freq_nat_outer_first = df_nat_freq_outer.iloc[0]['Freq_Hz']
+    freq_nat_inner_first = df_nat_freq_inner.iloc[0]['Freq_Hz']
+    
+    print(f"Usando {len(df_nat_freq_outer)} modos naturais para Outer Race (primeiro: {freq_nat_outer_first:.1f} Hz)")
+    print(f"Usando {len(df_nat_freq_inner)} modos naturais para Inner Race (primeiro: {freq_nat_inner_first:.1f} Hz)")
 
     # --- 2. IDENTIFICAÇÃO DOS SEGMENTOS NORMAIS ---
     segmentos_normais_treino = {

@@ -39,7 +39,7 @@ def visualizar_sinais_impulso(selected_rpm=1730, save_path=None):
         TAXA_AMOSTRAL=12000,
         params_drive_end=params_drive_end,
         amplitudes_referencia=amplitudes_referencia,
-        multiplicadores=[5],  # Amplitude x5 para visualização clara
+        multiplicadores=[1],  # Amplitude x5 para visualização clara
         fases_para_adicionar_rad=[0], # Apenas fase 0
         damping_ratio=0.1,
         duracao_pulso_seg=0.1, # Pulso curto
