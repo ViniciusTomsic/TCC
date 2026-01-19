@@ -16,13 +16,14 @@ import segment_and_split_data as ssd
 # =============================================================================
 DIAMETERS = [0.2, 0.5, 1.0, 1.2]
 K_VALUES = {
-    'inner': [0.05, 0.1, 0.2], 
-    'outer': [0.004, 0.008, 0.016], 
-    'ball': [0.025, 0.05, 0.1]
+    'inner': [1.0], 
+    'outer': [1.0], 
+    'ball': [1.0]
 }
 RPMS = [1730, 1750, 1772, 1797]
 FS = 12000  # Sampling rate
 NUM_RANDOM_SEGMENTS = 10  # Number of random normal segments to use as baselines
+MAX_S_ITER = 50 # Reverted number of force modes sum
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -129,11 +130,12 @@ def main():
                         
                         # Calculate Spectrum
                         if f_type == 'inner':
-                            spec_df = bu.calcular_espectro_inner_completo(diam, rpm, K=k_val)
+                            spec_df = bu.calcular_espectro_inner_completo(diam, rpm, K=k_val, max_s_iter=MAX_S_ITER)
                         elif f_type == 'outer':
+                            # Outer race calc does not use max_s_iter iteration in the same way (uses harmonics Z*j)
                             spec_df = bu.calcular_espectro_outer_race(diam, rpm, K=k_val)
                         elif f_type == 'ball':
-                            spec_df = bu.calcular_espectro_ball_completo(diam, rpm, K=k_val)
+                            spec_df = bu.calcular_espectro_ball_completo(diam, rpm, K=k_val, max_s_iter=MAX_S_ITER)
                         
                         # Synthesize Time Domain
                         syn_sig = synthesize_time_signal(spec_df, duration=duration_seg, fs=FS)

@@ -43,7 +43,7 @@ def calculate_tandon_coefficients(fault_diameter_mm, rpm, fault_type, K=1.0):
     alpha = np.radians(alpha_deg)
     
     # Load parameters
-    radial_load_kg = 50
+    radial_load_kg = 10
     radial_load_N = radial_load_kg * 9.80665 # Convert kg to Newtons
     
     # Pulse Height (K) - Now configurable via parameter (default 1.0) 
@@ -304,8 +304,8 @@ def get_bearing_natural_frequencies():
 def calcular_espectro_inner_completo(
     fault_diameter_mm, 
     rpm, 
-    max_harmonics=5,     # Quantos picos principais (j)
-    num_sidebands=3,     # Quantos sidebands (r) ao redor de cada j
+    max_harmonics=7,    # Quantos picos principais (j)
+    num_sidebands=5,    # Quantos sidebands (r) ao redor de cada j
     max_s_iter=50,       # Limite da somatória interna do pulso
     K=1.0                # Pulse height coefficient (float or list)
 ):
@@ -464,7 +464,7 @@ def calcular_espectro_inner_completo(
 # FUNÇÃO OUTER RACE (MOVIDA DO NOTEBOOK)
 # =============================================================================
 
-def calcular_espectro_outer_race(fault_diameter_mm, rpm, max_harmonics=10, K=1.0):
+def calcular_espectro_outer_race(fault_diameter_mm, rpm, max_harmonics=9, K=1.0):
     """
     Calcula o espectro de aceleração (teórico) para falha na Pista Externa (Outer Race)
     localizada no centro da zona de carga, baseando-se na Eq. 20 de Tandon.
@@ -545,8 +545,8 @@ def calcular_espectro_outer_race(fault_diameter_mm, rpm, max_harmonics=10, K=1.0
 def calcular_espectro_ball_completo(
     fault_diameter_mm, 
     rpm, 
-    max_harmonics=5,     # Quantos picos principais (j)
-    num_sidebands=3,     # Quantos sidebands (r) ao redor de cada j
+    max_harmonics=7,    # Quantos picos principais (j)
+    num_sidebands=5,    # Quantos sidebands (r) ao redor de cada j
     max_s_iter=50,       # Limite da somatória interna do pulso
     K=1.0                # Pulse height coefficient (float or list)
 ):
