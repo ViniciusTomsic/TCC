@@ -42,7 +42,7 @@ def gerar_dados_sinteticos_treino(
     TAXA_AMOSTRAL,
     params_drive_end,
     amplitudes_referencia,
-    multiplicadores=[2, 5, 10],
+    multiplicadores=[1],
     fases_para_adicionar_rad=[0, np.pi/2, np.pi, 3*np.pi/2],
     damping_ratio=0.1,
     duracao_pulso_seg=0.1,
@@ -66,7 +66,7 @@ def gerar_dados_sinteticos_treino(
             'FTF': freq_ftf
         }
 
-    def criar_resposta_impulso(taxa_amostral, tipo_falha, damping, duracao_pulso, num_modos=10):
+    def criar_resposta_impulso(taxa_amostral, tipo_falha, damping, duracao_pulso, num_modos=6):
         """
         Cria resposta ao impulso como soma ponderada de múltiplas frequências naturais.
         
@@ -79,7 +79,7 @@ def gerar_dados_sinteticos_treino(
             tipo_falha: 'Pista Externa', 'Pista Interna' ou 'Esfera'
             damping: Razão de amortecimento
             duracao_pulso: Duração do impulso (segundos)
-            num_modos: Número de modos vibracionais a incluir (default: 10)
+            num_modos: Número de modos vibracionais a incluir (default: 6)
         """
         # Selecionar DataFrame de frequências naturais baseado no tipo de falha
         if tipo_falha == 'Pista Externa':
@@ -237,7 +237,7 @@ if __name__ == "__main__":
     print("Iniciando script de geração de sinais por impulso...")
     
     # Reduzindo parâmetros como sugerido pelo usuário para teste rápido
-    multipliers_test = [2] # Apenas um multiplicador
+    multipliers_test = [1] # Apenas um multiplicador
     phases_test = [0, np.pi] # Apenas duas fases
     
     # Filtrar um subconjunto de dados normais para não demorar muito no teste
