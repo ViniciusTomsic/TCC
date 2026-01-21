@@ -2,11 +2,11 @@ import numpy as np
 import pandas as pd
 import sys
 import os
+from functools import lru_cache
 
 # Add src to path just in case
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-import segment_and_split_data as ssd
 import bearing_utils as bu
 
 # =============================================================================
@@ -34,6 +34,122 @@ amplitudes_referencia = {
 }
 
 # =============================================================================
+# PUBLIC HELPERS (reutilizáveis em notebooks)
+# =============================================================================
+
+@lru_cache(maxsize=1)
+def _get_nat_freq_outer_inner():
+    """Carrega e separa frequências naturais (cache em memória)."""
+    df_nat_freq = bu.get_bearing_natural_frequencies()
+    df_nat_freq_outer = df_nat_freq[df_nat_freq["Race"] == "Outer"].reset_index(drop=True)
+    df_nat_freq_inner = df_nat_freq[df_nat_freq["Race"] == "Inner"].reset_index(drop=True)
+    return df_nat_freq_outer, df_nat_freq_inner
+
+
+def calcular_frequencias_rolamento(n, fr, d, D, phi_graus=0.0):
+    """Frequências características teóricas (Hz)."""
+    phi_rad = np.deg2rad(phi_graus)
+    termo_comum = (d / D) * np.cos(phi_rad)
+    freq_ftf = (fr / 2) * (1 - termo_comum)
+    return {
+        "Pista Externa": (n * fr / 2) * (1 - termo_comum),
+        "Pista Interna": (n * fr / 2) * (1 + termo_comum),
+        "Esfera": (D * fr / (2 * d)) * (1 - termo_comum**2),
+        "FTF": freq_ftf,
+    }
+
+
+def criar_resposta_impulso(
+    taxa_amostral: float,
+    tipo_falha: str,
+    damping: float,
+    duracao_pulso: float,
+    num_modos: int = 6,
+):
+    """
+    Cria resposta ao impulso como soma ponderada de múltiplas frequências naturais.
+
+    Observação: esta função é usada no `general_sam_analysis.ipynb` para evitar
+    recriar manualmente o sinal no notebook.
+    """
+    df_nat_freq_outer, df_nat_freq_inner = _get_nat_freq_outer_inner()
+
+    # Selecionar DataFrame de frequências naturais baseado no tipo de falha
+    if tipo_falha == "Pista Externa":
+        df_race = df_nat_freq_outer
+    else:  # Pista Interna ou Esfera
+        df_race = df_nat_freq_inner
+
+    modos = df_race.head(num_modos)
+
+    n_pontos_pulso = int(duracao_pulso * taxa_amostral)
+    if n_pontos_pulso <= 0:
+        n_pontos_pulso = 1
+    t_pulse = np.linspace(0, duracao_pulso, n_pontos_pulso, endpoint=False)
+
+    pulso_total = np.zeros(n_pontos_pulso)
+    for _, modo in modos.iterrows():
+        freq_natural = modo["Freq_Hz"]
+        mass = modo["Mass_kg"]
+        omega_n = 2 * np.pi * freq_natural
+        if omega_n <= 0:
+            continue
+
+        # Receptância modal (inversamente proporcional à rigidez modal)
+        receptance = 1.0 / (mass * omega_n**2)
+        A = damping * omega_n
+        omega_d = omega_n * np.sqrt(1 - damping**2)
+        pulso_modo = receptance * np.exp(-A * t_pulse) * np.sin(omega_d * t_pulse)
+        pulso_total += pulso_modo
+
+    return pulso_total
+
+
+def gerar_sinal_impulso_completo(
+    *,
+    fs: float,
+    duration_points: int,
+    defect_freq_hz: float,
+    tipo_falha_str: str,
+    damping: float = 0.1,
+    duracao_pulso: float = 0.02,
+    num_modos: int = 6,
+):
+    """
+    Gera sinal sintético 'puro' via convolução:
+    trem de impulsos (defect_freq_hz) * resposta ao impulso (modos naturais).
+    """
+    duration_sec = duration_points / fs
+
+    # 1) Trem de impulsos
+    trem = np.zeros(duration_points)
+    if defect_freq_hz <= 0:
+        return trem
+
+    periodo_s = 1.0 / defect_freq_hz
+    ts = 1.0 / fs
+    for t_imp in np.arange(0, duration_sec, periodo_s):
+        idx = int(t_imp / ts)
+        if idx < duration_points:
+            trem[idx] = 1.0
+
+    # 2) Resposta ao impulso
+    resp_imp = criar_resposta_impulso(
+        taxa_amostral=fs,
+        tipo_falha=tipo_falha_str,
+        damping=damping,
+        duracao_pulso=duracao_pulso,
+        num_modos=num_modos,
+    )
+    max_abs = float(np.max(np.abs(resp_imp))) if len(resp_imp) else 0.0
+    if max_abs > 0:
+        resp_imp = resp_imp / max_abs
+
+    # 3) Convolução
+    return np.convolve(trem, resp_imp, mode="same")
+
+
+# =============================================================================
 # MAIN FUNCTION
 # =============================================================================
 
@@ -53,85 +169,17 @@ def gerar_dados_sinteticos_treino(
     Based on impulse response convolution.
     """
 
-    # --- 1. FUNÇÕES AUXILIARES INTERNAS ---
-    
-    def calcular_frequencias_rolamento(n, fr, d, D, phi_graus=0.0):
-        phi_rad = np.deg2rad(phi_graus)
-        termo_comum = (d / D) * np.cos(phi_rad)
-        freq_ftf = (fr / 2) * (1 - termo_comum)
-        return {
-            'Pista Externa': (n * fr / 2) * (1 - termo_comum),
-            'Pista Interna': (n * fr / 2) * (1 + termo_comum),
-            'Esfera': (D * fr / (2 * d)) * (1 - termo_comum**2),
-            'FTF': freq_ftf
-        }
-
-    def criar_resposta_impulso(taxa_amostral, tipo_falha, damping, duracao_pulso, num_modos=6):
-        """
-        Cria resposta ao impulso como soma ponderada de múltiplas frequências naturais.
-        
-        Quando um impacto ocorre no rolamento, múltiplos modos vibracionais são excitados
-        simultaneamente. Esta função modela isso somando as contribuições de vários modos,
-        cada um ponderado pela sua receptância (1/(M*ω²)).
-        
-        Args:
-            taxa_amostral: Taxa de amostragem (Hz)
-            tipo_falha: 'Pista Externa', 'Pista Interna' ou 'Esfera'
-            damping: Razão de amortecimento
-            duracao_pulso: Duração do impulso (segundos)
-            num_modos: Número de modos vibracionais a incluir (default: 6)
-        """
-        # Selecionar DataFrame de frequências naturais baseado no tipo de falha
-        if tipo_falha == 'Pista Externa':
-            df_race = df_nat_freq_outer
-        else:  # Pista Interna ou Esfera
-            df_race = df_nat_freq_inner
-        
-        # Pegar os primeiros N modos
-        modos = df_race.head(num_modos)
-        
-        # Gerar vetor de tempo
-        n_pontos_pulso = int(duracao_pulso * taxa_amostral)
-        if n_pontos_pulso == 0: n_pontos_pulso = 1
-        t_pulse = np.linspace(0, duracao_pulso, n_pontos_pulso, endpoint=False)
-        
-        # Inicializar pulso total
-        pulso_total = np.zeros(n_pontos_pulso)
-        
-        # Somar contribuição de cada modo vibracional
-        for _, modo in modos.iterrows():
-            freq_natural = modo['Freq_Hz']
-            mass = modo['Mass_kg']
-            omega_n = 2 * np.pi * freq_natural
-            
-            # Receptância modal (inversamente proporcional à rigidez modal)
-            # Quanto maior a receptância, maior a resposta deste modo ao impulso
-            if omega_n > 0:
-                receptance = 1.0 / (mass * omega_n**2)
-            else:
-                continue  # Pular modos inválidos
-            
-            # Gerar impulso amortecido para este modo
-            A = damping * omega_n
-            omega_d = omega_n * np.sqrt(1 - damping**2)
-            pulso_modo = receptance * np.exp(-A * t_pulse) * np.sin(omega_d * t_pulse)
-            
-            # Adicionar ao pulso total
-            pulso_total += pulso_modo
-        
-        return pulso_total
-    
-    # --- 2. OBTER FREQUÊNCIAS NATURAIS (UMA VEZ APENAS) ---
-    df_nat_freq = bu.get_bearing_natural_frequencies()
-    df_nat_freq_outer = df_nat_freq[df_nat_freq['Race'] == 'Outer'].reset_index(drop=True)
-    df_nat_freq_inner = df_nat_freq[df_nat_freq['Race'] == 'Inner'].reset_index(drop=True)
-    
-    # Para logging, mostrar a primeira e algumas frequências principais
-    freq_nat_outer_first = df_nat_freq_outer.iloc[0]['Freq_Hz']
-    freq_nat_inner_first = df_nat_freq_inner.iloc[0]['Freq_Hz']
-    
-    print(f"Usando {len(df_nat_freq_outer)} modos naturais para Outer Race (primeiro: {freq_nat_outer_first:.1f} Hz)")
-    print(f"Usando {len(df_nat_freq_inner)} modos naturais para Inner Race (primeiro: {freq_nat_inner_first:.1f} Hz)")
+    # --- 1. Frequências naturais (log apenas) ---
+    df_nat_freq_outer, df_nat_freq_inner = _get_nat_freq_outer_inner()
+    if len(df_nat_freq_outer) > 0 and len(df_nat_freq_inner) > 0:
+        freq_nat_outer_first = df_nat_freq_outer.iloc[0]["Freq_Hz"]
+        freq_nat_inner_first = df_nat_freq_inner.iloc[0]["Freq_Hz"]
+        print(
+            f"Usando {len(df_nat_freq_outer)} modos naturais para Outer Race (primeiro: {freq_nat_outer_first:.1f} Hz)"
+        )
+        print(
+            f"Usando {len(df_nat_freq_inner)} modos naturais para Inner Race (primeiro: {freq_nat_inner_first:.1f} Hz)"
+        )
 
     # --- 2. IDENTIFICAÇÃO DOS SEGMENTOS NORMAIS ---
     segmentos_normais_treino = {
@@ -158,7 +206,6 @@ def gerar_dados_sinteticos_treino(
         rpm_atual = df_normal['rotacao_rpm'].iloc[0]
         N_PONTOS = len(sinal_normal_base)
         duracao_s = N_PONTOS / TAXA_AMOSTRAL
-        t = np.linspace(0.0, duracao_s, N_PONTOS, endpoint=False)
         fr_hz = rpm_atual / 60
         freqs_teoricas = calcular_frequencias_rolamento(fr=fr_hz, **params_drive_end)
         
@@ -233,6 +280,8 @@ def gerar_dados_sinteticos_treino(
 
 
 if __name__ == "__main__":
+    import segment_and_split_data as ssd
+
     # --- EXECUÇÃO TESTE ---
     print("Iniciando script de geração de sinais por impulso...")
     

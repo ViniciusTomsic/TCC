@@ -3,13 +3,12 @@ import pandas as pd
 import random
 import sys
 import os
+from typing import Dict, List, Optional, Sequence, Tuple
 
 # Add src to path to allow imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import bearing_utils as bu
-# This import triggers data loading and splitting, which might take a moment.
-import segment_and_split_data as ssd
 
 # =============================================================================
 # CONFIGURATION
@@ -28,6 +27,51 @@ MAX_S_ITER = 50 # Reverted number of force modes sum
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
+
+_FAULT_PT_TO_EN = {
+    "Pista Externa": "outer",
+    "Pista Interna": "inner",
+    "Esfera": "ball",
+    "Outer": "outer",
+    "Inner": "inner",
+    "Ball": "ball",
+    "OR": "outer",
+    "IR": "inner",
+    "B": "ball",
+    "outer": "outer",
+    "inner": "inner",
+    "ball": "ball",
+}
+
+_FAULT_EN_TO_PT = {
+    "outer": "Pista Externa",
+    "inner": "Pista Interna",
+    "ball": "Esfera",
+}
+
+
+def _normalize_fault_type(tipo_falha: str) -> Tuple[str, str]:
+    """Normaliza tipo de falha e retorna (en, pt)."""
+    if tipo_falha is None:
+        raise ValueError("tipo_falha não pode ser None")
+    tipo_falha_str = str(tipo_falha).strip()
+    en = _FAULT_PT_TO_EN.get(tipo_falha_str)
+    if en is None:
+        raise ValueError(
+            f"tipo_falha inválido: {tipo_falha!r}. Use 'Pista Externa'|'Pista Interna'|'Esfera' ou 'outer'|'inner'|'ball'."
+        )
+    pt = _FAULT_EN_TO_PT[en]
+    return en, pt
+
+
+def pad_or_trim(sig: np.ndarray, n_points: int) -> np.ndarray:
+    """Garante comprimento `n_points` (corta ou completa com zeros)."""
+    if len(sig) > n_points:
+        return sig[:n_points]
+    if len(sig) < n_points:
+        return np.pad(sig, (0, n_points - len(sig)))
+    return sig
+
 
 def synthesize_time_signal(spectrum_df, duration=1.0, fs=FS):
     """
@@ -60,124 +104,245 @@ def synthesize_time_signal(spectrum_df, duration=1.0, fs=FS):
         
     return signal
 
+
+def calcular_espectro_tandon(
+    *,
+    diametro_mm: float,
+    rpm: int,
+    tipo_falha: str,
+    k_val: float,
+    max_harmonics: int = 7,
+    num_sidebands: int = 5,
+    max_s_iter: int = MAX_S_ITER,
+):
+    """
+    Calcula espectro (DataFrame) via modelagem de Tandon, usando funções de `bearing_utils`.
+    Retorna DataFrame com colunas `Frequency_Hz`, `Amplitude_Accel_m_s2`, `K`.
+    """
+    fault_en, _ = _normalize_fault_type(tipo_falha)
+    if fault_en == "outer":
+        return bu.calcular_espectro_outer_race(
+            diametro_mm,
+            rpm,
+            max_harmonics=max_harmonics,
+            K=k_val,
+        )
+    if fault_en == "inner":
+        return bu.calcular_espectro_inner_completo(
+            diametro_mm,
+            rpm,
+            max_harmonics=max_harmonics,
+            num_sidebands=num_sidebands,
+            max_s_iter=max_s_iter,
+            K=k_val,
+        )
+    return bu.calcular_espectro_ball_completo(
+        diametro_mm,
+        rpm,
+        max_harmonics=max_harmonics,
+        num_sidebands=num_sidebands,
+        max_s_iter=max_s_iter,
+        K=k_val,
+    )
+
+
+def gerar_sinal_tandon_puro(
+    *,
+    fs: float,
+    n_points: int,
+    diametro_mm: float,
+    rpm: int,
+    tipo_falha: str,
+    k_val: float,
+    max_harmonics: int = 7,
+    num_sidebands: int = 5,
+    max_s_iter: int = MAX_S_ITER,
+) -> np.ndarray:
+    """Gera sinal 'puro' (falha) no tempo, a partir do espectro Tandon."""
+    spec_df = calcular_espectro_tandon(
+        diametro_mm=diametro_mm,
+        rpm=rpm,
+        tipo_falha=tipo_falha,
+        k_val=k_val,
+        max_harmonics=max_harmonics,
+        num_sidebands=num_sidebands,
+        max_s_iter=max_s_iter,
+    )
+    sig = synthesize_time_signal(spec_df, duration=n_points / fs, fs=fs)
+    return pad_or_trim(sig, n_points)
+
+
+def gerar_sinal_tandon_completo(
+    *,
+    fs: float,
+    n_points: int,
+    diametro_mm: float,
+    rpm: int,
+    tipo_falha: str,
+    k_val: float,
+    sinal_normal: np.ndarray,
+    max_harmonics: int = 7,
+    num_sidebands: int = 5,
+    max_s_iter: int = MAX_S_ITER,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Retorna (sinal_puro, sinal_final) onde:
+    - sinal_puro: falha via Tandon
+    - sinal_final: sinal_normal + sinal_puro
+    """
+    base = pad_or_trim(np.asarray(sinal_normal), n_points)
+    puro = gerar_sinal_tandon_puro(
+        fs=fs,
+        n_points=n_points,
+        diametro_mm=diametro_mm,
+        rpm=rpm,
+        tipo_falha=tipo_falha,
+        k_val=k_val,
+        max_harmonics=max_harmonics,
+        num_sidebands=num_sidebands,
+        max_s_iter=max_s_iter,
+    )
+    return puro, base + puro
+
+
+def gerar_dados_sinteticos_tandon_df(
+    *,
+    dicionario_treino: Dict[str, "object"],
+    fs: float = FS,
+    rpms: Sequence[int] = tuple(RPMS),
+    diametros_mm: Sequence[float] = tuple(DIAMETERS),
+    k_values: Optional[Dict[str, Sequence[float]]] = None,
+    num_random_segments: int = NUM_RANDOM_SEGMENTS,
+    seed: Optional[int] = None,
+    incluir_normais_reais: bool = True,
+    max_harmonics: int = 7,
+    num_sidebands: int = 5,
+    max_s_iter: int = MAX_S_ITER,
+) -> pd.DataFrame:
+    """
+    Gera um DataFrame (schema impulse-like) com sinais via Tandon.
+
+    Colunas:
+    - rpm
+    - tipo_falha_adicionada  ('Normal'|'Pista Externa'|'Pista Interna'|'Esfera')
+    - diametro_falha_mm      (float ou NaN)
+    - k_val                 (float ou NaN)
+    - sinal_puro            (np.ndarray)
+    - sinal_final           (np.ndarray)
+    - metodo                ('real_normal'|'tandon')
+    - base_normal           (chave do segmento usado como baseline)
+    """
+    rng = random.Random(seed)
+    if k_values is None:
+        k_values = K_VALUES
+
+    rows: List[dict] = []
+
+    if incluir_normais_reais:
+        for key, df_seg in dicionario_treino.items():
+            try:
+                if str(df_seg["tipo_falha"].iloc[0]) != "Normal":
+                    continue
+                rpm = int(df_seg["rotacao_rpm"].iloc[0])
+                sig = df_seg["amplitude"].values
+                rows.append(
+                    {
+                        "rpm": rpm,
+                        "tipo_falha_adicionada": "Normal",
+                        "diametro_falha_mm": np.nan,
+                        "k_val": np.nan,
+                        "sinal_puro": np.zeros_like(sig),
+                        "sinal_final": sig,
+                        "metodo": "real_normal",
+                        "base_normal": key,
+                    }
+                )
+            except Exception:
+                continue
+
+    for rpm in rpms:
+        rpm_candidates: List[Tuple[str, np.ndarray]] = []
+        for key, df_seg in dicionario_treino.items():
+            try:
+                if str(df_seg["tipo_falha"].iloc[0]) != "Normal":
+                    continue
+                if int(df_seg["rotacao_rpm"].iloc[0]) != int(rpm):
+                    continue
+                rpm_candidates.append((key, df_seg["amplitude"].values))
+            except Exception:
+                continue
+
+        if not rpm_candidates:
+            continue
+
+        baselines = (
+            rng.sample(rpm_candidates, num_random_segments)
+            if len(rpm_candidates) > num_random_segments
+            else rpm_candidates
+        )
+
+        for base_key, base_sig in baselines:
+            n_points = len(base_sig)
+            base_sig = np.asarray(base_sig)
+
+            for fault_en in ["inner", "outer", "ball"]:
+                fault_pt = _FAULT_EN_TO_PT[fault_en]
+                for k_val in k_values.get(fault_en, []):
+                    for diam in diametros_mm:
+                        puro, final = gerar_sinal_tandon_completo(
+                            fs=fs,
+                            n_points=n_points,
+                            diametro_mm=float(diam),
+                            rpm=int(rpm),
+                            tipo_falha=fault_en,
+                            k_val=float(k_val),
+                            sinal_normal=base_sig,
+                            max_harmonics=max_harmonics,
+                            num_sidebands=num_sidebands,
+                            max_s_iter=max_s_iter,
+                        )
+                        rows.append(
+                            {
+                                "rpm": int(rpm),
+                                "tipo_falha_adicionada": fault_pt,
+                                "diametro_falha_mm": float(diam),
+                                "k_val": float(k_val),
+                                "sinal_puro": puro,
+                                "sinal_final": final,
+                                "metodo": "tandon",
+                                "base_normal": base_key,
+                            }
+                        )
+
+    return pd.DataFrame(rows)
+
 # =============================================================================
 # MAIN GENERATION LOGIC
 # =============================================================================
 
 def main():
-    print("Starting synthetic data generation...")
-    
-    generated_data = []
+    # Import aqui para evitar side-effects ao importar este módulo
+    import segment_and_split_data as ssd
 
-    # 1. Access normal segments from segment_and_split_data
-    # ssd.dicionario_treino contains the normal training segments
-    # Each item is a DataFrame with 'amplitude' and metadata columns
-    
-    print(f"Total normal segments available in training set: {len(ssd.dicionario_treino)}")
+    print("Starting synthetic data generation (Tandon)...")
+    df = gerar_dados_sinteticos_tandon_df(
+        dicionario_treino=ssd.dicionario_treino,
+        fs=FS,
+        rpms=RPMS,
+        diametros_mm=DIAMETERS,
+        k_values=K_VALUES,
+        num_random_segments=NUM_RANDOM_SEGMENTS,
+        max_s_iter=MAX_S_ITER,
+    )
 
-    # 2. Add ALL normal segments to the final dataset
-    # fault_type='Normal', diameter=None, k_val=None
-    print("Adding all normal training segments to dataset...")
-    for key, df_seg in ssd.dicionario_treino.items():
-        signal = df_seg['amplitude'].values
-        # Metadata is also available in df_seg but we normalize it for our output format
-        rpm = df_seg['rotacao_rpm'].iloc[0] if 'rotacao_rpm' in df_seg else 0
-        
-        generated_data.append({
-            'rpm': rpm,
-            'fault_type': 'Normal',
-            'diameter': None,
-            'k_val': None,
-            'signal': signal,
-            'pure_signal': np.zeros_like(signal)
-        })
-    print(f"Added {len(generated_data)} normal segments.")
-
-    # 3. Iterate through RPMs for synthetic generation
-    for rpm in RPMS:
-        print(f"Processing RPM: {rpm}")
-        
-        # Filter normal segments for the current RPM
-        # We need to keys from dicionario_treino that match the RPM
-        # The key format in segment_and_split_data is usually like "{rpm}_Normal_..._seg_{i}"
-        # But let's check the 'rotacao_rpm' column in the dataframe just to be sure/cleaner
-        
-        rpm_segments = []
-        for key, df_seg in ssd.dicionario_treino.items():
-            if df_seg['rotacao_rpm'].iloc[0] == rpm:
-                rpm_segments.append(df_seg['amplitude'].values)
-        
-        if not rpm_segments:
-            print(f"Warning: No normal segments found for RPM {rpm} in training dictionary.")
-            continue
-            
-        # 4. Randomly select segments for baseline
-        if len(rpm_segments) > NUM_RANDOM_SEGMENTS:
-            baseline_signals = random.sample(rpm_segments, NUM_RANDOM_SEGMENTS)
-        else:
-            baseline_signals = rpm_segments # Use all if available count is less than target
-            
-        print(f"  Selected {len(baseline_signals)} baseline segments for synthetic generation.")
-
-        # 5. Generate synthetic faults for each baseline
-        segment_size = len(baseline_signals[0]) # Assuming all segments same size, which they are (4096)
-        duration_seg = segment_size / FS
-
-        for baseline_sig in baseline_signals:
-            for f_type in ['inner', 'outer', 'ball']:
-                for k_val in K_VALUES[f_type]:
-                    for diam in DIAMETERS:
-                        
-                        # Calculate Spectrum
-                        if f_type == 'inner':
-                            spec_df = bu.calcular_espectro_inner_completo(diam, rpm, K=k_val, max_s_iter=MAX_S_ITER)
-                        elif f_type == 'outer':
-                            # Outer race calc does not use max_s_iter iteration in the same way (uses harmonics Z*j)
-                            spec_df = bu.calcular_espectro_outer_race(diam, rpm, K=k_val)
-                        elif f_type == 'ball':
-                            spec_df = bu.calcular_espectro_ball_completo(diam, rpm, K=k_val, max_s_iter=MAX_S_ITER)
-                        
-                        # Synthesize Time Domain
-                        syn_sig = synthesize_time_signal(spec_df, duration=duration_seg, fs=FS)
-                        
-                        # Length Check & Alignment
-                        if len(syn_sig) > len(baseline_sig):
-                            syn_sig = syn_sig[:len(baseline_sig)]
-                        elif len(syn_sig) < len(baseline_sig):
-                            syn_sig = np.pad(syn_sig, (0, len(baseline_sig) - len(syn_sig)))
-                        
-                        # SUPERIMPOSITION (Normal + Synthetic Fault)
-                        combined_sig = baseline_sig + syn_sig
-                        
-                        # Add to dataset
-                        generated_data.append({
-                            'rpm': rpm,
-                            'fault_type': f_type,
-                            'diameter': diam,
-                            'k_val': k_val,
-                            'diameter': diam,
-                            'k_val': k_val,
-                            'signal': combined_sig,
-                            'pure_signal': syn_sig
-                        })
-
-    # 6. Combine to DataFrame
-    final_df = pd.DataFrame(generated_data)
-    
-    # 7. Final Report
     print("\nGeneration Complete.")
-    print(f"Total records in final DataFrame: {len(final_df)}")
-    print("\nClass Distribution:")
-    print(final_df['fault_type'].value_counts())
-    
+    print(f"Total records in final DataFrame: {len(df)}")
+    if "tipo_falha_adicionada" in df.columns:
+        print("\nClass Distribution:")
+        print(df["tipo_falha_adicionada"].value_counts())
     print("\nSample Data:")
-    print(final_df.head())
-    
-    # Optional: Save or return? The user requirement says "output final deve conter um dataframe"
-    # For a script, usually we assume it runs and maybe saves or just acts as a module.
-    # Since this is a standalone script execution request, printing results is good verification.
-    
-    return final_df
+    print(df.head())
+    return df
 
 if __name__ == "__main__":
     df = main()
