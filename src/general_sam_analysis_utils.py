@@ -2,8 +2,84 @@ import random
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
+import scipy.signal
 from scipy.fft import fft
 from scipy.spatial.distance import cosine
+
+
+def apply_antialiasing_filter(signal: np.ndarray, fs: float, cutoff_ratio: float = 0.4, order: int = 4) -> np.ndarray:
+    """
+    Applies a lowpass Butterworth filter for anti-aliasing.
+    
+    Parameters:
+    -----------
+    signal : np.ndarray
+        Input signal (1D).
+    fs : float
+        Sampling frequency in Hz.
+    cutoff_ratio : float, optional
+        Ratio of the cutoff frequency to the sampling frequency. 
+        Nyquist is 0.5. Default is 0.4.
+    order : int, optional
+        Order of the Butterworth filter. Default is 4.
+        
+    Returns:
+    --------
+    np.ndarray
+        Filtered signal.
+    """
+    nyquist = 0.5 * fs
+    cutoff = cutoff_ratio * fs
+    
+    # Ensure cutoff is within Nyquist limit
+    if cutoff >= nyquist:
+        cutoff = 0.99 * nyquist
+        
+    b, a = scipy.signal.butter(order, cutoff, fs=fs, btype='low', analog=False)
+    filtered_signal = scipy.signal.filtfilt(b, a, signal)
+    return filtered_signal
+
+
+def apply_hanning_window(signal: np.ndarray) -> np.ndarray:
+    """
+    Applies a Hanning window to the signal.
+    
+    Parameters:
+    -----------
+    signal : np.ndarray
+        Input signal (1D).
+        
+    Returns:
+    --------
+    np.ndarray
+        Signal multiplied by the Hanning window.
+    """
+    window = np.hanning(len(signal))
+    return signal * window
+
+
+def limit_spectrum_frequency(freqs: np.ndarray, spectrum: np.ndarray, min_freq: float, max_freq: float) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Limits the frequency spectrum to a specific range [min_freq, max_freq].
+    
+    Parameters:
+    -----------
+    freqs : np.ndarray
+        Array of frequencies.
+    spectrum : np.ndarray
+        Array of spectrum magnitudes (corresponding to freqs).
+    min_freq : float
+        Minimum frequency to include.
+    max_freq : float
+        Maximum frequency to include.
+        
+    Returns:
+    --------
+    Tuple[np.ndarray, np.ndarray]
+        Tuple containing (sliced_freqs, sliced_spectrum).
+    """
+    mask = (freqs >= min_freq) & (freqs <= max_freq)
+    return freqs[mask], spectrum[mask]
 
 
 # Diâmetros de falha no dataset CWRU (mm) -> string usada na coluna `diametro_falha`
