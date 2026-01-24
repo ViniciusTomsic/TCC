@@ -40,6 +40,37 @@ def apply_antialiasing_filter(signal: np.ndarray, fs: float, cutoff_ratio: float
     return filtered_signal
 
 
+def apply_lowpass_filter(signal: np.ndarray, fs: float, cutoff_freq: float = 1200.0, order: int = 4) -> np.ndarray:
+    """
+    Applies a lowpass Butterworth filter with a specific cutoff frequency.
+    
+    Parameters:
+    -----------
+    signal : np.ndarray
+        Input signal (1D).
+    fs : float
+        Sampling frequency in Hz.
+    cutoff_freq : float, optional
+        Cutoff frequency in Hz. Default is 1200.0 Hz.
+    order : int, optional
+        Order of the Butterworth filter. Default is 4.
+        
+    Returns:
+    --------
+    np.ndarray
+        Filtered signal.
+    """
+    nyquist = 0.5 * fs
+    
+    # Ensure cutoff is within Nyquist limit
+    if cutoff_freq >= nyquist:
+        cutoff_freq = 0.99 * nyquist
+        
+    b, a = scipy.signal.butter(order, cutoff_freq, fs=fs, btype='low', analog=False)
+    filtered_signal = scipy.signal.filtfilt(b, a, signal)
+    return filtered_signal
+
+
 def apply_hanning_window(signal: np.ndarray) -> np.ndarray:
     """
     Applies a Hanning window to the signal.
