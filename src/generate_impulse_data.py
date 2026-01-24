@@ -64,7 +64,7 @@ def criar_resposta_impulso(
     tipo_falha: str,
     damping: float,
     duracao_pulso: float,
-    num_modos: int = 6,
+    num_modos: int = 3,
 ):
     """
     Cria resposta ao impulso como soma ponderada de múltiplas frequências naturais.
