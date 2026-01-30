@@ -21,9 +21,9 @@ def add_features_to_dataframe(df, taxa_amostral=12000):
     # Using defaults from atributes.py but modifying for test:
     # Keep lowpass (1200Hz) but remove lower limits
     min_freq_pico = 0  
-    max_freq_pico = 1200
+    max_freq_pico = 3000
     min_freq_fft = 0   
-    max_freq_fft = 1200
+    max_freq_fft = 3000
     
     # Function to apply row-wise
     def _extract_wrapper(row):

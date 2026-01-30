@@ -2,12 +2,9 @@ import numpy as np
 import pandas as pd
 import sys
 import os
-from functools import lru_cache
 
 # Add src to path just in case
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-import bearing_utils as bu
 
 # =============================================================================
 # CONFIGURATION
@@ -37,15 +34,6 @@ amplitudes_referencia = {
 # PUBLIC HELPERS (reutilizáveis em notebooks)
 # =============================================================================
 
-@lru_cache(maxsize=1)
-def _get_nat_freq_outer_inner():
-    """Carrega e separa frequências naturais (cache em memória)."""
-    df_nat_freq = bu.get_bearing_natural_frequencies()
-    df_nat_freq_outer = df_nat_freq[df_nat_freq["Race"] == "Outer"].reset_index(drop=True)
-    df_nat_freq_inner = df_nat_freq[df_nat_freq["Race"] == "Inner"].reset_index(drop=True)
-    return df_nat_freq_outer, df_nat_freq_inner
-
-
 def calcular_frequencias_rolamento(n, fr, d, D, phi_graus=0.0):
     """Frequências características teóricas (Hz)."""
     phi_rad = np.deg2rad(phi_graus)
@@ -59,94 +47,50 @@ def calcular_frequencias_rolamento(n, fr, d, D, phi_graus=0.0):
     }
 
 
-def criar_resposta_impulso(
-    taxa_amostral: float,
-    tipo_falha: str,
-    damping: float,
-    duracao_pulso: float,
-    num_modos: int = 3,
-):
-    """
-    Cria resposta ao impulso como soma ponderada de múltiplas frequências naturais.
-
-    Observação: esta função é usada no `general_sam_analysis.ipynb` para evitar
-    recriar manualmente o sinal no notebook.
-    """
-    df_nat_freq_outer, df_nat_freq_inner = _get_nat_freq_outer_inner()
-
-    # Selecionar DataFrame de frequências naturais baseado no tipo de falha
-    if tipo_falha == "Pista Externa":
-        df_race = df_nat_freq_outer
-    else:  # Pista Interna ou Esfera
-        df_race = df_nat_freq_inner
-
-    modos = df_race.head(num_modos)
-
-    n_pontos_pulso = int(duracao_pulso * taxa_amostral)
-    if n_pontos_pulso <= 0:
-        n_pontos_pulso = 1
-    t_pulse = np.linspace(0, duracao_pulso, n_pontos_pulso, endpoint=False)
-
-    pulso_total = np.zeros(n_pontos_pulso)
-    for _, modo in modos.iterrows():
-        freq_natural = modo["Freq_Hz"]
-        mass = modo["Mass_kg"]
-        omega_n = 2 * np.pi * freq_natural
-        if omega_n <= 0:
-            continue
-
-        # Receptância modal (inversamente proporcional à rigidez modal)
-        receptance = 1.0 / (mass * omega_n**2)
-        A = damping * omega_n
-        omega_d = omega_n * np.sqrt(1 - damping**2)
-        pulso_modo = receptance * np.exp(-A * t_pulse) * np.sin(omega_d * t_pulse)
-        pulso_total += pulso_modo
-
-    return pulso_total
-
 
 def gerar_sinal_impulso_completo(
     *,
     fs: float,
     duration_points: int,
     defect_freq_hz: float,
-    tipo_falha_str: str,
-    damping: float = 0.1,
-    duracao_pulso: float = 0.02,
-    num_modos: int = 6,
 ):
     """
-    Gera sinal sintético 'puro' via convolução:
-    trem de impulsos (defect_freq_hz) * resposta ao impulso (modos naturais).
+    Gera trem de impulsos delta de Dirac na frequência característica de falha.
+    
+    Parâmetros:
+    -----------
+    fs : float
+        Taxa de amostragem (Hz)
+    duration_points : int
+        Número de pontos no sinal (duração em amostras)
+    defect_freq_hz : float
+        Frequência característica de falha (Hz)
+    
+    Retorna:
+    --------
+    np.ndarray
+        Trem de impulsos delta de Dirac (valores 1.0 nos instantes de impulso, 0.0 caso contrário)
     """
     duration_sec = duration_points / fs
-
-    # 1) Trem de impulsos
+    
+    # Inicializar array zerado
     trem = np.zeros(duration_points)
+    
+    # Se a frequência for inválida, retornar zeros
     if defect_freq_hz <= 0:
         return trem
-
+    
+    # Calcular período entre impulsos e intervalo de amostragem
     periodo_s = 1.0 / defect_freq_hz
     ts = 1.0 / fs
+    
+    # Gerar impulsos nos múltiplos do período
     for t_imp in np.arange(0, duration_sec, periodo_s):
         idx = int(t_imp / ts)
         if idx < duration_points:
             trem[idx] = 1.0
-
-    # 2) Resposta ao impulso
-    resp_imp = criar_resposta_impulso(
-        taxa_amostral=fs,
-        tipo_falha=tipo_falha_str,
-        damping=damping,
-        duracao_pulso=duracao_pulso,
-        num_modos=num_modos,
-    )
-    max_abs = float(np.max(np.abs(resp_imp))) if len(resp_imp) else 0.0
-    if max_abs > 0:
-        resp_imp = resp_imp / max_abs
-
-    # 3) Convolução
-    return np.convolve(trem, resp_imp, mode="same")
+    
+    return trem
 
 
 # =============================================================================
@@ -160,28 +104,27 @@ def gerar_dados_sinteticos_treino(
     amplitudes_referencia,
     multiplicadores=[1],
     fases_para_adicionar_rad=[0, np.pi/2, np.pi, 3*np.pi/2],
-    damping_ratio=0.1,
-    duracao_pulso_seg=0.1,
-    profundidade_modulacao=0.5
 ):
     """
-    Gera dados sintéticos de falha (versão 'limpa', com menos prints).
-    Based on impulse response convolution.
+    Gera dados sintéticos de falha usando trens de impulsos delta de Dirac puros.
+    
+    Parâmetros:
+    -----------
+    dicionario_treino : dict
+        Dicionário com segmentos de dados normais
+    TAXA_AMOSTRAL : float
+        Taxa de amostragem (Hz)
+    params_drive_end : dict
+        Parâmetros do rolamento (n, d, D, phi_graus)
+    amplitudes_referencia : dict
+        Amplitudes de referência para cada tipo de falha
+    multiplicadores : list
+        Multiplicadores de amplitude para aumentar variabilidade
+    fases_para_adicionar_rad : list
+        Fases em radianos para deslocamento temporal dos impulsos
     """
 
-    # --- 1. Frequências naturais (log apenas) ---
-    df_nat_freq_outer, df_nat_freq_inner = _get_nat_freq_outer_inner()
-    if len(df_nat_freq_outer) > 0 and len(df_nat_freq_inner) > 0:
-        freq_nat_outer_first = df_nat_freq_outer.iloc[0]["Freq_Hz"]
-        freq_nat_inner_first = df_nat_freq_inner.iloc[0]["Freq_Hz"]
-        print(
-            f"Usando {len(df_nat_freq_outer)} modos naturais para Outer Race (primeiro: {freq_nat_outer_first:.1f} Hz)"
-        )
-        print(
-            f"Usando {len(df_nat_freq_inner)} modos naturais para Inner Race (primeiro: {freq_nat_inner_first:.1f} Hz)"
-        )
-
-    # --- 2. IDENTIFICAÇÃO DOS SEGMENTOS NORMAIS ---
+    # --- 1. IDENTIFICAÇÃO DOS SEGMENTOS NORMAIS ---
     segmentos_normais_treino = {
         chave: df for chave, df in dicionario_treino.items()
         if df['tipo_falha'].iloc[0] == 'Normal'
@@ -192,7 +135,7 @@ def gerar_dados_sinteticos_treino(
         return pd.DataFrame()
 
     # Print de status importante
-    print(f"Gerando Sinais... (damp={damping_ratio}, dur={duracao_pulso_seg}s, mod={profundidade_modulacao})")
+    print(f"Gerando Sinais com impulsos delta de Dirac puros...")
 
     # --- 4. GERAÇÃO E COMBINAÇÃO DOS SINAIS ---
     lista_sinais_treino = []
@@ -213,33 +156,19 @@ def gerar_dados_sinteticos_treino(
             freq_teorica = freqs_teoricas[tipo_falha_sintetica]
             amp_ref = amplitudes_referencia['Drive End'][tipo_falha_sintetica]
 
-            # Criar resposta ao impulso específica para este tipo de falha
-            resposta_impulso = criar_resposta_impulso(
-                TAXA_AMOSTRAL, tipo_falha_sintetica, damping_ratio, duracao_pulso_seg
+            # Utilizar a função auxiliar para gerar o trem de impulsos puro
+            sinal_falha_bruto = gerar_sinal_impulso_completo(
+                fs=TAXA_AMOSTRAL,
+                duration_points=N_PONTOS,
+                defect_freq_hz=freq_teorica,
             )
-            # Normalizar
-            max_abs_val = np.max(np.abs(resposta_impulso))
-            if max_abs_val > 0:
-                resposta_impulso /= max_abs_val
-
-            trem_de_impulsos = np.zeros(N_PONTOS)
-            periodo_falha_seg = 1.0 / freq_teorica
-            ts_segundos = 1.0 / TAXA_AMOSTRAL 
-            
-            # Create impulse train
-            for t_impacto in np.arange(0, duracao_s, periodo_falha_seg):
-                idx = int(t_impacto / ts_segundos)
-                if idx < N_PONTOS:
-                    trem_de_impulsos[idx] = 1.0
-            
-            sinal_falha_ringing = np.convolve(trem_de_impulsos, resposta_impulso, mode='same')
-            
-            # Sem modulação (falha gerada apenas na frequência característica)
-            sinal_falha_bruto = sinal_falha_ringing
                 
             for mult in multiplicadores:
                 for fase in fases_para_adicionar_rad:
                     amplitude_final = amp_ref * mult
+                    # Calcular deslocamento de fase em amostras
+                    periodo_falha_seg = 1.0 / freq_teorica
+                    ts_segundos = 1.0 / TAXA_AMOSTRAL
                     deslocamento_idx = int((fase / (2 * np.pi)) * periodo_falha_seg / ts_segundos)
                     # Use roll to simulate phase shift
                     sinal_falha_sintetico = np.roll(sinal_falha_bruto, deslocamento_idx) * amplitude_final

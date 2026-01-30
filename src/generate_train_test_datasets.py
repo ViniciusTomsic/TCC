@@ -16,9 +16,9 @@ def main():
     # 'pista interna': [0.05, 0.1, 0.5]
     # 'esfera': [0.02, 0.05, 0.01]
     k_values = {
-        'outer': [0.02, 0.05, 0.1],
-        'inner': [0.05, 0.1, 0.5],
-        'ball': [0.02, 0.05, 0.01]
+        'outer': [0.02, 0.05, 0.1, 0.2, 0.5, 1.0],
+        'inner': [0.05, 0.1, 0.5, 1.0, 1.5],
+        'ball': [0.01, 0.02, 0.05, 0.1, 0.2]
     }
 
     print("Generating Training DataFrame (df_treino)...")

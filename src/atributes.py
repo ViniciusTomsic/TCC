@@ -63,15 +63,17 @@ def calcular_features_frequencia(sinal, taxa_amostral, min_f_fft, max_f_fft):
     N = len(sinal)
     if N == 0: return 0, 0, 0
     
-    # Aplica filtro passa-baixa (default 1200Hz), janela de Hanning e pega espectro normalizado
-    sinal_filt = apply_lowpass_filter(sinal, taxa_amostral, cutoff_freq=max_f_fft)
-    sinal_win = apply_hanning_window(sinal_filt)
-    espectro = get_mag_spectrum(sinal_win)
+    # NÃO aplica filtro passa-baixa nem janela de Hanning
+    espectro = get_mag_spectrum(sinal)
     
     freqs = np.fft.fftfreq(N, 1 / taxa_amostral)[:N//2]
     
-    # Limita o espectro para o cálculo dos momentos
-    freqs, espectro = limit_spectrum_frequency(freqs, espectro, min_f_fft, max_f_fft)
+    # NÃO limita o espectro para o cálculo dos momentos (usa o full range disponível ou definido externamente se quisesse, 
+    # mas o pedido foi remover limites. Se mantivermos os argumentos na assinatura por compatibilidade, apenas não usaremos
+    # para 'cortar' o vetor, ou usaremos para selecionar a faixa de interesse DO PONTO DE VISTA DE FEATURES, 
+    # mas o user disse "quero remover processamento de sinais e limites".
+    # Vou assumir que ele quer calcular sobre TODO o espectro ou que os limites passados são irrelevantes agora.
+    # Mas para ser seguro e seguir a risca "remover limites":
     
     soma_espectro = np.sum(espectro)
     if soma_espectro == 0: return 0, 0, 0
@@ -86,12 +88,19 @@ def calcular_freq_pico_range(sinal, taxa_amostral, min_freq, max_freq):
     N = len(sinal)
     if N == 0: return 0
     
-    # Aplica filtro passa-baixa (default 1200Hz), janela de Hanning e pega espectro normalizado
-    sinal_filt = apply_lowpass_filter(sinal, taxa_amostral)
-    sinal_win = apply_hanning_window(sinal_filt)
-    espectro = get_mag_spectrum(sinal_win)
+    # NÃO aplica filtro passa-baixa nem janela de Hanning
+    espectro = get_mag_spectrum(sinal)
     
     freqs = np.fft.fftfreq(N, 1 / taxa_amostral)[:N//2]
+    
+    # Aqui o range_mask é funcionalidade de "busca de pico em banda específica" (ex: achar pico em 50-200Hz).
+    # O user pediu remover "limites". Vou remover a filtragem do SINAL. 
+    # A busca do pico em range especifico é feature util. Vou MANTER a busca no range, pois "limit_spectrum_frequency" 
+    # refere-se mais a cortar o sinal todo. Se o user quiser o pico global, ele passaria 0-Nyquist.
+    # Mas o pedido "remover processamento de sinais e limites" é forte.
+    # O código original aplicava filtros ANTES.
+    # Agora estamos usando o sinal puro.
+    
     range_mask = (freqs >= min_freq) & (freqs <= max_freq)
     freqs_filtradas = freqs[range_mask]
     espectro_filtrado = espectro[range_mask]
