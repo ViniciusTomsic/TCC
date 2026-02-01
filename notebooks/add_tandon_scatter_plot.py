@@ -200,7 +200,7 @@ def plot_method_comparison(results_df, df_baseline):
         plt.xlabel('Diâmetro da Falha', fontsize=14)
         plt.ylabel('Menor Ângulo SAM (Graus)', fontsize=14)
         plt.grid(False)
-        plt.legend(title='Método', fontsize=12, title_fontsize=13)
+        plt.legend(title='Método', fontsize=12, title_fontsize=13, loc='lower right', framealpha=0.9)
         plt.tight_layout()
         plt.show()
 
