@@ -82,10 +82,12 @@ def plot_tandon_vs_baseline(results_df, target_diameter_label=None):
                 if rpm_subset.empty:
                     continue
                     
-                baseline_val = rpm_subset['sam_real_vs_normal_deg'].iloc[0]
+                # O valor em 'sam_real_vs_normal_deg' agora é DISTÂNCIA (1-Cos).
+                # Para plotar na mesma escala de SIMILARIDADE (Cos), fazemos (1 - Distância).
+                baseline_val_sim = 1.0 - rpm_subset['sam_real_vs_normal_deg'].iloc[0]
                 
                 line = plt.axhline(
-                    y=baseline_val, 
+                    y=baseline_val_sim, 
                     color=rpm_colors[rpm], 
                     linestyle='--', 
                     alpha=0.8,
@@ -98,7 +100,7 @@ def plot_tandon_vs_baseline(results_df, target_diameter_label=None):
             # Titles and Labels
             plt.title(f'Sensibilidade Tandon - {title_name}\n(Diâmetro {current_dia})', fontsize=20, pad=20)
             plt.xlabel('Fator de Escala K (Amplitude do Impulso)', fontsize=16, labelpad=15)
-            plt.ylabel('SAM Médio (Graus)', fontsize=16, labelpad=15)
+            plt.ylabel('Cosseno (SAM)', fontsize=16, labelpad=15)
             plt.xticks(fontsize=14)
             plt.yticks(fontsize=14)
             plt.grid(True, linestyle=':', alpha=0.6)
@@ -132,7 +134,7 @@ def plot_tandon_vs_baseline(results_df, target_diameter_label=None):
 
 def plot_method_comparison(results_df, df_baseline):
     """
-    Plots a Bar Chart comparing the Best Performance (Minimum SAM) of each method:
+    Plots a Bar Chart comparing the Best Performance (Maximum SAM Similarity) of each method:
     - Baseline (Normal)
     - Tandon (FFT)
     - Impulse
@@ -149,10 +151,11 @@ def plot_method_comparison(results_df, df_baseline):
     df_syn = results_df[cols_interest].copy()
     
     # Prepare Baseline Results
-    # Baseline doesn't have 'k', so we fill with 0.0
+    # Ensure 'k' exists in baseline before selection
+    if 'k' not in df_baseline.columns:
+        df_baseline['k'] = 0.0
+        
     df_base = df_baseline[cols_interest].copy()
-    if 'k' not in df_base.columns: 
-        df_base['k'] = 0.0
 
     # Rename methods as requested
     method_map = {
@@ -166,58 +169,41 @@ def plot_method_comparison(results_df, df_baseline):
 
     df_final = pd.concat([df_syn, df_base], ignore_index=True)
     
-    unique_faults = df_final['fault_name'].unique()
+    # Select BEST configuration (Max SAM - Cosine) for each Fault/Diameter/Method combination
+    # We group by these columns and find the index of the maximum 'sam_mean_deg'
     
-    # Updated Palette with requested labels (Purple & Light Green from Viridis style)
-    hue_order = ['Baseline', 'Tandon', 'Impulse']
-    custom_palette = {'Baseline': '#999999', 'Tandon': '#440154', 'Impulse': '#5ec962'}
+    # 1. Drop rows where SAM is NaN to avoid idxmax returning NaN
+    df_clean = df_final.dropna(subset=['sam_mean_deg'])
+    
+    if df_clean.empty:
+        print("Aviso: Dataframe vazio após remover NaNs.")
+        return
 
-    for fault in unique_faults:
-        # Filter by fault
-        df_view = df_final[df_final['fault_name'] == fault].copy()
-        df_view = df_view.dropna(subset=['sam_mean_deg'])
-        
-        if df_view.empty:
-            continue
+    idx_best = df_clean.groupby(['fault_name', 'diameter_label', 'method'])['sam_mean_deg'].idxmax()
+    df_best = df_clean.loc[idx_best]
 
-        # Select BEST configuration (Min SAM) for each method/diameter
-        # We group by [method, diameter_label] and pick the row with min SAM
-        best_indices = df_view.groupby(['method', 'diameter_label'])['sam_mean_deg'].idxmin()
-        best_data = df_view.loc[best_indices].sort_values(by=['diameter_mm', 'method'])
+    # Create Pivot Table: Rows=(Fault, Diameter), Cols=Method, Values=SAM
+    pivot_df = df_best.pivot_table(
+        index=['fault_name', 'diameter_label'], 
+        columns='method', 
+        values='sam_mean_deg'
+    )
+    
+    # Sort/Reorder
+    desired_cols = ['Baseline', 'Tandon', 'Impulse']
+    final_cols = [c for c in desired_cols if c in pivot_df.columns]
+    pivot_df = pivot_df[final_cols]
+    
+    # Output LaTeX
+    print("--- Tabela Comparativa de Desempenho (LaTeX) ---")
+    print(pivot_df.to_latex(float_format="%.4f", caption="Comparação de Similaridade SAM (Cosseno)"))
+    print("\n" + "="*80 + "\n")
+    
+    # Opcional: Mostrar DataFrame no notebook também para conferência
+    try:
+        from IPython.display import display
+        display(pivot_df)
+    except ImportError:
+        print(pivot_df)
 
-        # --- PLOT ---
-        plt.figure(figsize=(10, 6), dpi=200)
-        
-        sns.barplot(
-            data=best_data, 
-            x='diameter_label', 
-            y='sam_mean_deg', 
-            hue='method',
-            hue_order=[h for h in hue_order if h in best_data['method'].values],
-            palette=custom_palette
-        )
-        plt.title(f'Comparação de Desempenho - {fault}', fontsize=16)
-        plt.xlabel('Diâmetro da Falha', fontsize=14)
-        plt.ylabel('Menor Ângulo SAM (Graus)', fontsize=14)
-        plt.grid(False)
-        plt.legend(title='Método', fontsize=12, title_fontsize=13, loc='lower right', framealpha=0.9)
-        plt.tight_layout()
-        plt.show()
-
-        # --- DETAIL TABLE (Tandon Only) ---
-        print(f"--- Melhores Configurações Tandon para {fault} ---")
-        
-        # Filter only Tandon rows from the best data
-        fft_details = best_data[best_data['method'] == 'Tandon'].copy()
-        
-        if not fft_details.empty:
-            # Select and rename columns for clean display
-            display_cols = ['diameter_label', 'rpm', 'k', 'sam_mean_deg']
-            fft_table = fft_details[display_cols].reset_index(drop=True)
-            display(fft_table)
-        else:
-            print("Nenhum dado Tandon válido encontrado para este defeito.")
-        
-        print("\n" + "="*80 + "\n")
-
-print("Funções carregadas: 'plot_tandon_vs_baseline', 'plot_tandon_facet_grid', 'plot_tandon_diameter_comparison', 'plot_method_comparison'.")
+print("Funções carregadas: 'plot_tandon_vs_baseline', 'plot_tandon_facet_grid', 'plot_method_comparison'.")

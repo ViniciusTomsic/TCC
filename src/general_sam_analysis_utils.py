@@ -131,7 +131,7 @@ FAULT_CODE_TO_LABEL = {
 
 
 def calcular_sam_graus(fft_ref: np.ndarray, fft_alvo: np.ndarray) -> float:
-    """Calcula o ângulo SAM (graus) entre dois espectros (magnitude ou complexo)."""
+    """Calcula o cosseno do ângulo SAM entre dois espectros (magnitude ou complexo)."""
     if np.iscomplexobj(fft_ref):
         fft_ref = np.abs(fft_ref)
     if np.iscomplexobj(fft_alvo):
@@ -140,7 +140,7 @@ def calcular_sam_graus(fft_ref: np.ndarray, fft_alvo: np.ndarray) -> float:
     min_len = min(len(fft_ref), len(fft_alvo))
     dist = cosine(fft_ref[:min_len], fft_alvo[:min_len])
     sim = np.clip(1.0 - dist, -1.0, 1.0)
-    return float(np.degrees(np.arccos(sim)))
+    return float(sim)
 
 
 def get_mag_spectrum(sig: np.ndarray) -> np.ndarray:
